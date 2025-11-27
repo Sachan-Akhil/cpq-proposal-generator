@@ -55,7 +55,7 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
                     {"role": "system", "content": "You are a helpful sales assistant."},
                     {"role": "user", "content": prompt_text}
                 ],
-                max_tokens=50,
+                max_tokens=3000,
                 temperature=0.0,
             )
             return response.choices[0].message.content
