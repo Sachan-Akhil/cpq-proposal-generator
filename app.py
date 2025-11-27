@@ -5,7 +5,7 @@ import base64
 import tempfile
 
 import requests
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_file
 from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
@@ -78,7 +78,7 @@ def create_pdf(text, logo_path=None):
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
 
-    # Write PDF to a temp file then read bytes
+    # Write PDF to a temp file then read bytes, avoiding encoding issues
     with tempfile.NamedTemporaryFile(delete=True) as tmpfile:
         pdf.output(tmpfile.name)
         tmpfile.seek(0)
@@ -209,19 +209,6 @@ def compose_prompt(transaction, transaction_lines):
     return prompt
 
 
-def upload_pdf_to_fileio(pdf_bytes):
-    pdf_bytes.seek(0)
-    files = {
-        'file': ('proposal.pdf', pdf_bytes, 'application/pdf'),
-    }
-    resp = requests.post("https://file.io/?expires=15m", files=files)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data.get("success"):
-        raise Exception("file.io upload failed")
-    return data.get("link")
-
-
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
 def generate_proposal_document():
@@ -240,21 +227,21 @@ def generate_proposal_document():
     try:
         transaction = fetch_transaction(base_url, process_var_name, transaction_id)
         transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
-
         prompt = compose_prompt(transaction, transaction_lines)
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
         if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response
+            return proposal_text_or_response  # error response from OpenAI wrapper
 
         pdf_file = create_pdf(proposal_text_or_response)
 
-        try:
-            download_url = upload_pdf_to_fileio(pdf_file)
-        except Exception as e:
-            return jsonify({"error": f"Uploading to file.io failed: {e}"}), 500
-
-        return jsonify({"download_url": download_url})
+        # Send PDF directly as response to the client
+        return send_file(
+            pdf_file,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"Proposal_{transaction_id}.pdf"
+        )
 
     except requests.HTTPError as http_err:
         return jsonify({"error": f"HTTP error when fetching transaction data: {http_err}"}), 502
