@@ -90,7 +90,7 @@ def compose_prompt(transaction):
         f"Write a professional sales proposal for the customer {customer_name}.\n"
         f"Transaction name: {transaction_name}\n"
         f"Total Contract Value: {total_value} {currency}\n"
-        f"Here are the line items:\n{lines_text}\n"
+        # f"Here are the line items:\n{lines_text}\n"
         "Include an introduction, overview of the items, pricing details, and terms and conditions suitable for a sales proposal."
     )
     return prompt
