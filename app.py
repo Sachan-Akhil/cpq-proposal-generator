@@ -4,7 +4,7 @@ from io import BytesIO
 import base64
 
 import requests
-from flask import Flask, request, send_file, jsonify, Response
+from flask import Flask, request, jsonify, Response
 from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
@@ -196,6 +196,18 @@ def compose_prompt(transaction, transaction_lines):
     )
     return prompt
 
+def upload_pdf_to_fileio(pdf_bytes):
+    pdf_bytes.seek(0)
+    files = {
+        'file': ('proposal.pdf', pdf_bytes, 'application/pdf'),
+    }
+    resp = requests.post("https://file.io/?expires=15m", files=files)
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("success"):
+        raise Exception("file.io upload failed")
+    return data.get("link")
+
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
 def generate_proposal_document():
@@ -222,12 +234,14 @@ def generate_proposal_document():
             return proposal_text_or_response  # error response from OpenAI wrapper
 
         pdf_file = create_pdf(proposal_text_or_response)
-        return send_file(
-            pdf_file,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f"Proposal_{transaction_id}.pdf"
-        )
+
+        try:
+            download_url = upload_pdf_to_fileio(pdf_file)
+        except Exception as e:
+            return jsonify({"error": f"Uploading to file.io failed: {e}"}), 500
+
+        return jsonify({"download_url": download_url})
+
     except requests.HTTPError as http_err:
         return jsonify({"error": f"HTTP error when fetching transaction data: {http_err}"}), 502
     except Exception as err:
