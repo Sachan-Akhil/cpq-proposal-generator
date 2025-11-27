@@ -23,7 +23,7 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
     for attempt in range(max_retries):
         try:
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4.1-mini",
                 messages=[
                     {"role": "system", "content": "You are a helpful sales assistant."},
                     {"role": "user", "content": prompt_text}
