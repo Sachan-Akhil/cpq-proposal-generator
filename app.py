@@ -35,9 +35,15 @@ def fetch_transaction_lines(base_url, process_var_name, transaction_id):
     resp.raise_for_status()
     return resp.json()
 
-def create_pdf(text):
+def create_pdf(text, logo_path=None):
     pdf = FPDF()
     pdf.add_page()
+    
+    # Insert logo if logo_path is provided (optional)
+    if logo_path:
+        pdf.image(logo_path, x=10, y=8, w=33)  # Adjust as needed
+        pdf.ln(30)
+    
     pdf.set_font("Arial", size=12)
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
@@ -68,36 +74,51 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
             else:
                 return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
+def extract_string(field_value):
+    if isinstance(field_value, str):
+        return field_value.strip()
+    elif isinstance(field_value, dict):
+        for key in ["displayValue", "value", "name"]:
+            if key in field_value and isinstance(field_value[key], str):
+                return field_value[key].strip()
+        return str(field_value)
+    elif field_value is None:
+        return ""
+    else:
+        return str(field_value)
+
 def compose_prompt(transaction, transaction_lines):
     # Base customer info
-    customer_name = transaction.get("_customer_t_company_name", "Unknown Customer")
-    customer_contact_name = f"{transaction.get('_customer_t_first_name', '')} {transaction.get('_customer_t_last_name', '')}".strip()
-    customer_address = ", ".join(filter(None, [
-        transaction.get("_customer_t_address", ""),
-        transaction.get("_customer_t_city", ""),
-        transaction.get("_customer_t_state", ""),
-        transaction.get("_customer_t_zip", ""),
-        transaction.get("_customer_t_country", "")
-    ])).strip(", ")
-    contact_email = transaction.get("_customer_t_email", "N/A")
-    contact_phone = transaction.get("_customer_t_phone", "N/A")
+    customer_name = extract_string(transaction.get("_customer_t_company_name", "Unknown Customer"))
+    customer_contact_name = " ".join(filter(None, [
+        extract_string(transaction.get("_customer_t_first_name", "")),
+        extract_string(transaction.get("_customer_t_last_name", ""))
+    ])).strip()
+    customer_address_parts = []
+    for field in ["_customer_t_address", "_customer_t_city", "_customer_t_state", "_customer_t_zip", "_customer_t_country"]:
+        value = extract_string(transaction.get(field, ""))
+        if value:
+            customer_address_parts.append(value)
+    customer_address = ", ".join(customer_address_parts)
+    contact_email = extract_string(transaction.get("_customer_t_email", "N/A"))
+    contact_phone = extract_string(transaction.get("_customer_t_phone", "N/A"))
 
     # Transaction info
-    transaction_name = transaction.get("transactionName_t", "N/A")
-    total_value = transaction.get("totalContractValue_t", "N/A")
-    currency = transaction.get("currency_t", "USD")
-    payment_terms = transaction.get("paymentTerms_t", "N/A")
-    owner = transaction.get("owner_t", "Sales Team")
-    sales_email = transaction.get("_owner_email_t", "sales@example.com")
-    sales_phone = transaction.get("_owner_phone_t", "N/A")
+    transaction_name = extract_string(transaction.get("transactionName_t", "N/A"))
+    total_value = extract_string(transaction.get("totalContractValue_t", "N/A"))
+    currency = extract_string(transaction.get("currency_t", "USD"))
+    payment_terms = extract_string(transaction.get("paymentTerms_t", "N/A"))
+    owner = extract_string(transaction.get("owner_t", "Sales Team"))
+    sales_email = extract_string(transaction.get("_owner_email_t", "sales@example.com"))
+    sales_phone = extract_string(transaction.get("_owner_phone_t", "N/A"))
 
     proposal_date = time.strftime("%B %d, %Y")
 
     # Compose line items text with necessary details only
     lines_text = ""
     for i, line in enumerate(transaction_lines.get("items", []), start=1):
-        part_number = line.get("_part_number", "N/A")
-        desc = line.get("_part_desc") or line.get("displayedItemName_l") or "N/A"
+        part_number = extract_string(line.get("_part_number", "N/A"))
+        desc = extract_string(line.get("_part_desc")) or extract_string(line.get("displayedItemName_l")) or "N/A"
 
         qty_raw = line.get("requestedQuantity_l", 1)
         try:
@@ -108,8 +129,8 @@ def compose_prompt(transaction, transaction_lines):
         price_unit = line.get("_price_unit_price_each", {}).get("value", 0)
         currency_local = line.get("_price_unit_price_each", {}).get("currency", currency)
 
-        lead_time = line.get("_part_lead_time", "N/A")
-        shipping_date = line.get("oRCL_ERP_RequestShipDate_l", "N/A")
+        lead_time = extract_string(line.get("_part_lead_time", "N/A"))
+        shipping_date = extract_string(line.get("oRCL_ERP_RequestShipDate_l", "N/A"))
 
         line_total = qty * price_unit
 
