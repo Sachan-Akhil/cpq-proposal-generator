@@ -55,8 +55,8 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
                     {"role": "system", "content": "You are a helpful sales assistant."},
                     {"role": "user", "content": prompt_text}
                 ],
-                max_tokens=1500,
-                temperature=0.7,
+                max_tokens=50,
+                temperature=0.0,
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -68,29 +68,40 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
             else:
                 return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
-def compose_prompt(transaction):
+def compose_prompt(transaction, transaction_lines):
     customer_name = transaction.get("_customer_t_company_name", "Unknown Customer")
     transaction_name = transaction.get("transactionName_t", "N/A")
     total_value = transaction.get("totalContractValue_t", "N/A")
     currency = transaction.get("currency_t", "USD")
 
-    """
     lines_text = ""
-    for i, line in enumerate(lines, start=1):
-        desc = line.get("displayedItemName_l") or line.get("_part_desc", "N/A")
-        qty = line.get("requestedQuantity_l", "1")
-        unit_price = line.get("_price_unit_price_each", "0")
+    for i, line in enumerate(transaction_lines.get("items", []), start=1):
+        desc = line.get("_part_desc") or line.get("displayedItemName_l") or "N/A"
+
+        qty_raw = line.get("requestedQuantity_l", 1)
         try:
-            line_total = float(qty) * float(unit_price)
+            qty = float(qty_raw)
         except (ValueError, TypeError):
-            line_total = 0
-        lines_text += f"{i}. {desc} - Quantity: {qty}, Unit Price: {unit_price} {currency}, Line Total: {line_total:.2f} {currency}\n"
-    """
+            qty = 1
+
+        price_info = line.get("_price_unit_price_each") or {}
+        unit_price_raw = price_info.get("value", 0)
+        try:
+            unit_price = float(unit_price_raw)
+        except (ValueError, TypeError):
+            unit_price = 0
+
+        currency_local = price_info.get("currency", currency)
+
+        line_total = qty * unit_price
+
+        lines_text += f"{i}. {desc} - Quantity: {qty}, Unit Price: {unit_price} {currency_local}, Line Total: {line_total:.2f} {currency_local}\n"
+
     prompt = (
         f"Write a professional sales proposal for the customer {customer_name}.\n"
         f"Transaction name: {transaction_name}\n"
         f"Total Contract Value: {total_value} {currency}\n"
-        # f"Here are the line items:\n{lines_text}\n"
+        f"Here are the line items:\n{lines_text}\n"
         "Include an introduction, overview of the items, pricing details, and terms and conditions suitable for a sales proposal."
     )
     return prompt
@@ -113,8 +124,7 @@ def generate_proposal_document():
         transaction = fetch_transaction(base_url, process_var_name, transaction_id)
         transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
 
-        # prompt = compose_prompt(transaction, transaction_lines)
-        prompt = compose_prompt(transaction)
+        prompt = compose_prompt(transaction, transaction_lines)
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
         if isinstance(proposal_text_or_response, tuple):
