@@ -74,7 +74,7 @@ def compose_prompt(transaction):
     total_value = transaction.get("totalContractValue_t", "N/A")
     currency = transaction.get("currency_t", "USD")
 
-"""
+    """
     lines_text = ""
     for i, line in enumerate(lines, start=1):
         desc = line.get("displayedItemName_l") or line.get("_part_desc", "N/A")
@@ -85,7 +85,7 @@ def compose_prompt(transaction):
         except (ValueError, TypeError):
             line_total = 0
         lines_text += f"{i}. {desc} - Quantity: {qty}, Unit Price: {unit_price} {currency}, Line Total: {line_total:.2f} {currency}\n"
-"""
+    """
     prompt = (
         f"Write a professional sales proposal for the customer {customer_name}.\n"
         f"Transaction name: {transaction_name}\n"
