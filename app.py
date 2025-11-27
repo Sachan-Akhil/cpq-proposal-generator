@@ -15,9 +15,12 @@ def create_sample_pdf():
     pdf.cell(200, 10, txt="Sample Proposal Document", ln=True, align="C")
     pdf.set_font("Arial", size=12)
     pdf.cell(200, 10, txt="This is a dummy proposal. Replace with actual content later.", ln=True, align="L")
-    pdf_bytes = BytesIO()
-    pdf.output(pdf_bytes)
+
+    # Properly get PDF as bytes
+    pdf_str = pdf.output(dest='S').encode('latin1')
+    pdf_bytes = BytesIO(pdf_str)
     pdf_bytes.seek(0)
+
     return pdf_bytes
 
 @app.route('/generate_proposal_document', methods=['POST'])
