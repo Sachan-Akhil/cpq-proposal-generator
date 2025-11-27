@@ -2,6 +2,7 @@ import os
 import time
 from io import BytesIO
 import base64
+import tempfile
 
 import requests
 from flask import Flask, request, jsonify, Response
@@ -24,6 +25,7 @@ HEADERS = {
     "Accept": "application/json"
 }
 
+
 def check_auth():
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Basic "):
@@ -36,6 +38,7 @@ def check_auth():
         return False
     return username == SERVICE_AUTH_USERNAME and password == SERVICE_AUTH_PASSWORD
 
+
 def require_basic_auth(f):
     def decorated(*args, **kwargs):
         if not check_auth():
@@ -46,6 +49,7 @@ def require_basic_auth(f):
     decorated.__name__ = f.__name__
     return decorated
 
+
 def fetch_transaction(base_url, process_var_name, transaction_id):
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
     url = f"{api_base}/{transaction_id}"
@@ -54,6 +58,7 @@ def fetch_transaction(base_url, process_var_name, transaction_id):
     resp.raise_for_status()
     return resp.json()
 
+
 def fetch_transaction_lines(base_url, process_var_name, transaction_id):
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
     url = f"{api_base}/{transaction_id}/transactionLine"
@@ -61,6 +66,7 @@ def fetch_transaction_lines(base_url, process_var_name, transaction_id):
                         auth=HTTPBasicAuth(ORACLE_CPQ_USERNAME, ORACLE_CPQ_PASSWORD))
     resp.raise_for_status()
     return resp.json()
+
 
 def create_pdf(text, logo_path=None):
     pdf = FPDF()
@@ -71,11 +77,15 @@ def create_pdf(text, logo_path=None):
     pdf.set_font("Arial", size=12)
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
-    # Fix Latin-1 encoding errors by replacing invalid chars
-    pdf_output = pdf.output(dest='S').encode('latin1', errors='replace')
-    pdf_bytes = BytesIO(pdf_output)
+
+    # Write PDF to a temp file then read bytes
+    with tempfile.NamedTemporaryFile(delete=True) as tmpfile:
+        pdf.output(tmpfile.name)
+        tmpfile.seek(0)
+        pdf_bytes = BytesIO(tmpfile.read())
     pdf_bytes.seek(0)
     return pdf_bytes
+
 
 def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
     for attempt in range(max_retries):
@@ -99,6 +109,7 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
             else:
                 return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
+
 def extract_string(field_value):
     if isinstance(field_value, str):
         return field_value.strip()
@@ -112,20 +123,21 @@ def extract_string(field_value):
     else:
         return str(field_value)
 
+
 def compose_prompt(transaction, transaction_lines):
     customer_name = extract_string(transaction.get("_customer_t_company_name", "Unknown Customer"))
     customer_contact_name = " ".join(filter(None, [
         extract_string(transaction.get("_customer_t_first_name", "")),
         extract_string(transaction.get("_customer_t_last_name", ""))
     ])).strip()
-    
+
     customer_address_parts = []
     for field in ["_customer_t_address", "_customer_t_city", "_customer_t_state", "_customer_t_zip", "_customer_t_country"]:
         value = extract_string(transaction.get(field, ""))
         if value:
             customer_address_parts.append(value)
     customer_address = ", ".join(customer_address_parts)
-    
+
     contact_email = extract_string(transaction.get("_customer_t_email", "N/A"))
     contact_phone = extract_string(transaction.get("_customer_t_phone", "N/A"))
 
@@ -196,6 +208,7 @@ def compose_prompt(transaction, transaction_lines):
     )
     return prompt
 
+
 def upload_pdf_to_fileio(pdf_bytes):
     pdf_bytes.seek(0)
     files = {
@@ -207,6 +220,7 @@ def upload_pdf_to_fileio(pdf_bytes):
     if not data.get("success"):
         raise Exception("file.io upload failed")
     return data.get("link")
+
 
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
@@ -220,7 +234,7 @@ def generate_proposal_document():
         return jsonify({"error": f"Missing one of {required_fields} in JSON body"}), 400
 
     transaction_id = data["transaction_id"]
-    base_url = data["base_url"].rstrip("/")  # remove trailing slash if present
+    base_url = data["base_url"].rstrip("/")
     process_var_name = data["process_var_name"]
 
     try:
@@ -231,7 +245,7 @@ def generate_proposal_document():
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
         if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response  # error response from OpenAI wrapper
+            return proposal_text_or_response
 
         pdf_file = create_pdf(proposal_text_or_response)
 
