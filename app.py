@@ -3,7 +3,6 @@ from io import BytesIO
 from fpdf import FPDF
 import os
 from openai import OpenAI
-from openai.error import RateLimitError
 
 app = Flask(__name__)
 client = OpenAI()
@@ -29,6 +28,7 @@ def generate_proposal_document():
         return jsonify({"error": "Missing 'transaction_id' in JSON body"}), 400
 
     transaction_id = data["transaction_id"]
+
     prompt = f"Write a professional sales proposal for the CPQ quote transaction ID: {transaction_id}."
 
     try:
@@ -42,10 +42,10 @@ def generate_proposal_document():
             temperature=0.7,
         )
         proposal_text = response.choices[0].message.content
-
-    except RateLimitError:
-        return jsonify({"error": "OpenAI API rate limit exceeded. Please try again later."}), 429
     except Exception as e:
+        # Detect rate limit error by inspecting attributes
+        if hasattr(e, 'status_code') and e.status_code == 429:
+            return jsonify({"error": "OpenAI API rate limit exceeded. Please try again later."}), 429
         return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
     pdf_file = create_pdf(proposal_text)
