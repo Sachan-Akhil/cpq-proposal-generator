@@ -71,7 +71,8 @@ def create_pdf(text, logo_path=None):
     pdf.set_font("Arial", size=12)
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
-    pdf_output = pdf.output(dest='S').encode('latin1')
+    # Fix Latin-1 encoding errors by replacing invalid chars
+    pdf_output = pdf.output(dest='S').encode('latin1', errors='replace')
     pdf_bytes = BytesIO(pdf_output)
     pdf_bytes.seek(0)
     return pdf_bytes
