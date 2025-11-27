@@ -1,3 +1,4 @@
 flask
 fpdf
 gunicorn
+flask-httpauth
