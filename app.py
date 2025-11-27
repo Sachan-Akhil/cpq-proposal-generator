@@ -1,32 +1,25 @@
 import os
 import time
-import base64
 from io import BytesIO
+import base64
+import tempfile
 
 import requests
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_file
 from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
-from supabase import create_client
 
 app = Flask(__name__)
 client = OpenAI()
 
-# Credentials for Oracle CPQ API
+# Credentials for external API Basic Auth (Oracle CPQ)
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
 ORACLE_CPQ_PASSWORD = os.getenv("ORACLE_CPQ_PASSWORD")
-ORACLE_CPQ_BASE_URL = os.getenv("ORACLE_CPQ_BASE_URL")  # Set this env var!
 
 # Credentials for this service Basic Auth
 SERVICE_AUTH_USERNAME = os.getenv("API_AUTH_USERNAME")
 SERVICE_AUTH_PASSWORD = os.getenv("API_AUTH_PASSWORD")
-
-# Supabase Storage credentials
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 HEADERS = {
     "Accept": "application/json"
@@ -85,8 +78,11 @@ def create_pdf(text, logo_path=None):
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
 
-    pdf_bytes = BytesIO()
-    pdf.output(pdf_bytes)
+    # Write PDF to a temp file then read bytes, avoiding encoding issues
+    with tempfile.NamedTemporaryFile(delete=True) as tmpfile:
+        pdf.output(tmpfile.name)
+        tmpfile.seek(0)
+        pdf_bytes = BytesIO(tmpfile.read())
     pdf_bytes.seek(0)
     return pdf_bytes
 
@@ -213,16 +209,6 @@ def compose_prompt(transaction, transaction_lines):
     return prompt
 
 
-def upload_pdf_to_supabase(pdf_bytes, bucket_name, filename):
-    pdf_bytes.seek(0)
-    response = supabase.storage.from_(bucket_name).upload(filename, pdf_bytes, {"content-type": "application/pdf"})
-    if response.get("error"):
-        print("Supabase upload error:", response["error"])
-        return None
-    public_url = supabase.storage.from_(bucket_name).get_public_url(filename)
-    return public_url
-
-
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
 def generate_proposal_document():
@@ -249,13 +235,13 @@ def generate_proposal_document():
 
         pdf_file = create_pdf(proposal_text_or_response)
 
-        filename = f"Proposal_{transaction_id}.pdf"
-        pdf_url = upload_pdf_to_supabase(pdf_file, "proposals", filename)
-
-        if not pdf_url:
-            return jsonify({"error": "Failed to upload PDF to Supabase Storage."}), 500
-
-        return jsonify({"pdf_url": pdf_url}), 200
+        # Send PDF directly as response to the client
+        return send_file(
+            pdf_file,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"Proposal_{transaction_id}.pdf"
+        )
 
     except requests.HTTPError as http_err:
         return jsonify({"error": f"HTTP error when fetching transaction data: {http_err}"}), 502
@@ -263,80 +249,5 @@ def generate_proposal_document():
         return jsonify({"error": f"Unexpected error: {err}"}), 500
 
 
-# --- Added: validation functions without SERVICE_URL or self-request ---
-
-def validate_env_vars():
-    required = [
-        "ORACLE_CPQ_USERNAME", "ORACLE_CPQ_PASSWORD",
-        "API_AUTH_USERNAME", "API_AUTH_PASSWORD",
-        "SUPABASE_URL", "SUPABASE_KEY",
-        "ORACLE_CPQ_BASE_URL"
-    ]
-    missing = [v for v in required if not os.getenv(v)]
-    if missing:
-        return False, f"Missing env vars: {', '.join(missing)}"
-    return True, "All required environment variables are set."
-
-
-def validate_oracle_cpq_auth():
-    if not ORACLE_CPQ_BASE_URL or not ORACLE_CPQ_USERNAME or not ORACLE_CPQ_PASSWORD:
-        return False, "Oracle CPQ credentials or base URL missing."
-    url = f"https://{ORACLE_CPQ_BASE_URL}/rest/v19/version"
-    try:
-        resp = requests.get(url, auth=HTTPBasicAuth(ORACLE_CPQ_USERNAME, ORACLE_CPQ_PASSWORD), timeout=5)
-        if resp.status_code == 200:
-            return True, "Oracle CPQ authentication succeeded."
-        return False, f"Oracle CPQ auth failed with HTTP {resp.status_code}."
-    except Exception as e:
-        return False, f"Oracle CPQ auth error: {e}"
-
-
-def validate_supabase_auth():
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return False, "Supabase credentials missing."
-    try:
-        client_temp = create_client(SUPABASE_URL, SUPABASE_KEY)
-        client_temp.storage.from_("proposals").list()
-        return True, "Supabase authentication succeeded."
-    except Exception as e:
-        return False, f"Supabase auth error: {e}"
-
-
-def validate_service_basic_auth():
-    if not SERVICE_AUTH_USERNAME:
-        return False, "Service Basic Auth username (API_AUTH_USERNAME) missing."
-    if not SERVICE_AUTH_PASSWORD:
-        return False, "Service Basic Auth password (API_AUTH_PASSWORD) missing."
-    return True, "Service Basic Auth credentials are present."
-
-
-def validate_all_auth():
-    results = {}
-
-    env_ok, env_msg = validate_env_vars()
-    results["Environment variables"] = {"success": env_ok, "message": env_msg}
-    if not env_ok:
-        return results
-
-    orcl_ok, orcl_msg = validate_oracle_cpq_auth()
-    results["Oracle CPQ"] = {"success": orcl_ok, "message": orcl_msg}
-
-    supa_ok, supa_msg = validate_supabase_auth()
-    results["Supabase"] = {"success": supa_ok, "message": supa_msg}
-
-    svc_ok, svc_msg = validate_service_basic_auth()
-    results["Service Basic Auth"] = {"success": svc_ok, "message": svc_msg}
-
-    return results
-
-
-@app.route("/validate_auth", methods=["GET"])
-def validate_auth_endpoint():
-    results = validate_all_auth()
-    status = 200 if all(r["success"] for r in results.values()) else 401
-    return jsonify(results), status
-
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(debug=True)
