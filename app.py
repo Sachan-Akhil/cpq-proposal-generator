@@ -52,11 +52,11 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "You are a helpful sales assistant."},
+                    {"role": "system", "content": "You are a helpful sales assistant who writes professional and detailed sales proposals."},
                     {"role": "user", "content": prompt_text}
                 ],
-                max_tokens=3000,
-                temperature=0.0,
+                max_tokens=700,
+                temperature=0.5,
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -69,13 +69,34 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
                 return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
 def compose_prompt(transaction, transaction_lines):
+    # Base customer info
     customer_name = transaction.get("_customer_t_company_name", "Unknown Customer")
+    customer_contact_name = f"{transaction.get('_customer_t_first_name', '')} {transaction.get('_customer_t_last_name', '')}".strip()
+    customer_address = ", ".join(filter(None, [
+        transaction.get("_customer_t_address", ""),
+        transaction.get("_customer_t_city", ""),
+        transaction.get("_customer_t_state", ""),
+        transaction.get("_customer_t_zip", ""),
+        transaction.get("_customer_t_country", "")
+    ])).strip(", ")
+    contact_email = transaction.get("_customer_t_email", "N/A")
+    contact_phone = transaction.get("_customer_t_phone", "N/A")
+
+    # Transaction info
     transaction_name = transaction.get("transactionName_t", "N/A")
     total_value = transaction.get("totalContractValue_t", "N/A")
     currency = transaction.get("currency_t", "USD")
+    payment_terms = transaction.get("paymentTerms_t", "N/A")
+    owner = transaction.get("owner_t", "Sales Team")
+    sales_email = transaction.get("_owner_email_t", "sales@example.com")
+    sales_phone = transaction.get("_owner_phone_t", "N/A")
 
+    proposal_date = time.strftime("%B %d, %Y")
+
+    # Compose line items text with necessary details only
     lines_text = ""
     for i, line in enumerate(transaction_lines.get("items", []), start=1):
+        part_number = line.get("_part_number", "N/A")
         desc = line.get("_part_desc") or line.get("displayedItemName_l") or "N/A"
 
         qty_raw = line.get("requestedQuantity_l", 1)
@@ -84,25 +105,49 @@ def compose_prompt(transaction, transaction_lines):
         except (ValueError, TypeError):
             qty = 1
 
-        price_info = line.get("_price_unit_price_each") or {}
-        unit_price_raw = price_info.get("value", 0)
-        try:
-            unit_price = float(unit_price_raw)
-        except (ValueError, TypeError):
-            unit_price = 0
+        price_unit = line.get("_price_unit_price_each", {}).get("value", 0)
+        currency_local = line.get("_price_unit_price_each", {}).get("currency", currency)
 
-        currency_local = price_info.get("currency", currency)
+        lead_time = line.get("_part_lead_time", "N/A")
+        shipping_date = line.get("oRCL_ERP_RequestShipDate_l", "N/A")
 
-        line_total = qty * unit_price
+        line_total = qty * price_unit
 
-        lines_text += f"{i}. {desc} - Quantity: {qty}, Unit Price: {unit_price} {currency_local}, Line Total: {line_total:.2f} {currency_local}\n"
+        lines_text += (
+            f"{i}. Product: {desc} (Part #: {part_number})\n"
+            f"   Quantity: {qty}\n"
+            f"   Unit Price: {price_unit:.2f} {currency_local}\n"
+            f"   Line Total: {line_total:.2f} {currency_local}\n"
+            f"   Lead Time: {lead_time}\n"
+            f"   Estimated Shipping Date: {shipping_date}\n\n"
+        )
 
     prompt = (
-        f"Write a professional sales proposal for the customer {customer_name}.\n"
-        f"Transaction name: {transaction_name}\n"
+        f"Generate a detailed and professional sales proposal document.\n"
+        f"Proposal Date: {proposal_date}\n"
+        f"Prepared by: {owner}\n"
+        f"Sales Representative Contact:\n"
+        f"Email: {sales_email}\n"
+        f"Phone: {sales_phone}\n\n"
+        f"Customer Information:\n"
+        f"Name: {customer_name}\n"
+        f"Contact Person: {customer_contact_name}\n"
+        f"Address: {customer_address}\n"
+        f"Email: {contact_email}\n"
+        f"Phone: {contact_phone}\n\n"
+        f"Transaction Details:\n"
+        f"Transaction Name: {transaction_name}\n"
         f"Total Contract Value: {total_value} {currency}\n"
-        f"Here are the line items:\n{lines_text}\n"
-        "Include an introduction, overview of the items, pricing details, and terms and conditions suitable for a sales proposal."
+        f"Payment Terms: {payment_terms}\n\n"
+        f"Line Items:\n{lines_text}\n"
+        f"Please include these sections:\n"
+        f"1. Introduction with appreciation.\n"
+        f"2. Summary of offered products and services.\n"
+        f"3. Pricing and payment terms.\n"
+        f"4. Delivery expectations.\n"
+        f"5. Terms and conditions.\n"
+        f"6. Next steps and contact info.\n"
+        f"Use a professional and persuasive tone suitable for a business proposal."
     )
     return prompt
 
