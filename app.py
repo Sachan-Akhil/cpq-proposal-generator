@@ -1,12 +1,12 @@
-import openai
 from flask import Flask, request, send_file, jsonify
 from io import BytesIO
 from fpdf import FPDF
 import os
+from openai import OpenAI
 
 app = Flask(__name__)
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI()
 
 def create_pdf(text):
     pdf = FPDF()
@@ -34,7 +34,7 @@ def generate_proposal_document():
     prompt = f"Write a professional sales proposal for the CPQ quote transaction ID: {transaction_id}."
 
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a helpful sales assistant."},
@@ -43,7 +43,7 @@ def generate_proposal_document():
             max_tokens=1500,
             temperature=0.7
         )
-        proposal_text = response['choices'][0]['message']['content']
+        proposal_text = response.choices[0].message.content
     except Exception as e:
         return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
