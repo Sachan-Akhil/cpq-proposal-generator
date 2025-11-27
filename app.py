@@ -30,12 +30,11 @@ def generate_proposal_document():
 
     transaction_id = data["transaction_id"]
 
-    # Build a simple prompt, you can customize this later
     prompt = f"Write a professional sales proposal for the CPQ quote transaction ID: {transaction_id}."
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful sales assistant."},
                 {"role": "user", "content": prompt}
