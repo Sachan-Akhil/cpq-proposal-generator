@@ -1,5 +1,6 @@
 import os
 import time
+import base64
 from io import BytesIO
 
 import requests
@@ -15,6 +16,7 @@ client = OpenAI()
 # Credentials for Oracle CPQ API
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
 ORACLE_CPQ_PASSWORD = os.getenv("ORACLE_CPQ_PASSWORD")
+ORACLE_CPQ_BASE_URL = os.getenv("ORACLE_CPQ_BASE_URL")  # Set this env var!
 
 # Credentials for this service Basic Auth
 SERVICE_AUTH_USERNAME = os.getenv("API_AUTH_USERNAME")
@@ -259,6 +261,80 @@ def generate_proposal_document():
         return jsonify({"error": f"HTTP error when fetching transaction data: {http_err}"}), 502
     except Exception as err:
         return jsonify({"error": f"Unexpected error: {err}"}), 500
+
+
+# --- Added: validation functions without SERVICE_URL or self-request ---
+
+def validate_env_vars():
+    required = [
+        "ORACLE_CPQ_USERNAME", "ORACLE_CPQ_PASSWORD",
+        "API_AUTH_USERNAME", "API_AUTH_PASSWORD",
+        "SUPABASE_URL", "SUPABASE_KEY",
+        "ORACLE_CPQ_BASE_URL"
+    ]
+    missing = [v for v in required if not os.getenv(v)]
+    if missing:
+        return False, f"Missing env vars: {', '.join(missing)}"
+    return True, "All required environment variables are set."
+
+
+def validate_oracle_cpq_auth():
+    if not ORACLE_CPQ_BASE_URL or not ORACLE_CPQ_USERNAME or not ORACLE_CPQ_PASSWORD:
+        return False, "Oracle CPQ credentials or base URL missing."
+    url = f"https://{ORACLE_CPQ_BASE_URL}/rest/v19/version"
+    try:
+        resp = requests.get(url, auth=HTTPBasicAuth(ORACLE_CPQ_USERNAME, ORACLE_CPQ_PASSWORD), timeout=5)
+        if resp.status_code == 200:
+            return True, "Oracle CPQ authentication succeeded."
+        return False, f"Oracle CPQ auth failed with HTTP {resp.status_code}."
+    except Exception as e:
+        return False, f"Oracle CPQ auth error: {e}"
+
+
+def validate_supabase_auth():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False, "Supabase credentials missing."
+    try:
+        client_temp = create_client(SUPABASE_URL, SUPABASE_KEY)
+        client_temp.storage.from_("proposals").list()
+        return True, "Supabase authentication succeeded."
+    except Exception as e:
+        return False, f"Supabase auth error: {e}"
+
+
+def validate_service_basic_auth():
+    if not SERVICE_AUTH_USERNAME:
+        return False, "Service Basic Auth username (API_AUTH_USERNAME) missing."
+    if not SERVICE_AUTH_PASSWORD:
+        return False, "Service Basic Auth password (API_AUTH_PASSWORD) missing."
+    return True, "Service Basic Auth credentials are present."
+
+
+def validate_all_auth():
+    results = {}
+
+    env_ok, env_msg = validate_env_vars()
+    results["Environment variables"] = {"success": env_ok, "message": env_msg}
+    if not env_ok:
+        return results
+
+    orcl_ok, orcl_msg = validate_oracle_cpq_auth()
+    results["Oracle CPQ"] = {"success": orcl_ok, "message": orcl_msg}
+
+    supa_ok, supa_msg = validate_supabase_auth()
+    results["Supabase"] = {"success": supa_ok, "message": supa_msg}
+
+    svc_ok, svc_msg = validate_service_basic_auth()
+    results["Service Basic Auth"] = {"success": svc_ok, "message": svc_msg}
+
+    return results
+
+
+@app.route("/validate_auth", methods=["GET"])
+def validate_auth_endpoint():
+    results = validate_all_auth()
+    status = 200 if all(r["success"] for r in results.values()) else 401
+    return jsonify(results), status
 
 
 if __name__ == "__main__":
