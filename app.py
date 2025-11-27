@@ -1,25 +1,30 @@
 import os
 import time
 from io import BytesIO
-import base64
-import tempfile
 
 import requests
-from flask import Flask, request, jsonify, Response, send_file
+from flask import Flask, request, jsonify, Response
 from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
+from supabase import create_client
 
 app = Flask(__name__)
 client = OpenAI()
 
-# Credentials for external API Basic Auth (Oracle CPQ)
+# Credentials for Oracle CPQ API
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
 ORACLE_CPQ_PASSWORD = os.getenv("ORACLE_CPQ_PASSWORD")
 
 # Credentials for this service Basic Auth
 SERVICE_AUTH_USERNAME = os.getenv("API_AUTH_USERNAME")
 SERVICE_AUTH_PASSWORD = os.getenv("API_AUTH_PASSWORD")
+
+# Supabase Storage credentials
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 HEADERS = {
     "Accept": "application/json"
@@ -78,11 +83,8 @@ def create_pdf(text, logo_path=None):
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
 
-    # Write PDF to a temp file then read bytes, avoiding encoding issues
-    with tempfile.NamedTemporaryFile(delete=True) as tmpfile:
-        pdf.output(tmpfile.name)
-        tmpfile.seek(0)
-        pdf_bytes = BytesIO(tmpfile.read())
+    pdf_bytes = BytesIO()
+    pdf.output(pdf_bytes)
     pdf_bytes.seek(0)
     return pdf_bytes
 
@@ -209,6 +211,16 @@ def compose_prompt(transaction, transaction_lines):
     return prompt
 
 
+def upload_pdf_to_supabase(pdf_bytes, bucket_name, filename):
+    pdf_bytes.seek(0)
+    response = supabase.storage.from_(bucket_name).upload(filename, pdf_bytes, {"content-type": "application/pdf"})
+    if response.get("error"):
+        print("Supabase upload error:", response["error"])
+        return None
+    public_url = supabase.storage.from_(bucket_name).get_public_url(filename)
+    return public_url
+
+
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
 def generate_proposal_document():
@@ -235,13 +247,13 @@ def generate_proposal_document():
 
         pdf_file = create_pdf(proposal_text_or_response)
 
-        # Send PDF directly as response to the client
-        return send_file(
-            pdf_file,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f"Proposal_{transaction_id}.pdf"
-        )
+        filename = f"Proposal_{transaction_id}.pdf"
+        pdf_url = upload_pdf_to_supabase(pdf_file, "proposals", filename)
+
+        if not pdf_url:
+            return jsonify({"error": "Failed to upload PDF to Supabase Storage."}), 500
+
+        return jsonify({"pdf_url": pdf_url}), 200
 
     except requests.HTTPError as http_err:
         return jsonify({"error": f"HTTP error when fetching transaction data: {http_err}"}), 502
@@ -250,4 +262,5 @@ def generate_proposal_document():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
