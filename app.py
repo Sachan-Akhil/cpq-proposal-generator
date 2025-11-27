@@ -111,7 +111,7 @@ def generate_proposal_document():
 
     try:
         transaction = fetch_transaction(base_url, process_var_name, transaction_id)
-       # transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
+        transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
 
         # prompt = compose_prompt(transaction, transaction_lines)
         prompt = compose_prompt(transaction)
