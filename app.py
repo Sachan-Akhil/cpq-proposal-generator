@@ -1,57 +1,54 @@
+import openai
 from flask import Flask, request, send_file, jsonify
 from io import BytesIO
 from fpdf import FPDF
-from flask_httpauth import HTTPBasicAuth
-from werkzeug.security import check_password_hash, generate_password_hash
 import os
 
 app = Flask(__name__)
-auth = HTTPBasicAuth()
 
-# Store username and hashed password in environment variables
-users = {
-    os.getenv("API_AUTH_USERNAME", "admin"): generate_password_hash(os.getenv("API_AUTH_PASSWORD", "secret"))
-}
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-@auth.verify_password
-def verify_password(username, password):
-    if username in users and check_password_hash(users.get(username), password):
-        return username
-
-@app.route("/", methods=["GET"])
-def home():
-    return "Hello from CPQ Proposal Generator!", 200
-
-def create_sample_pdf():
+def create_pdf(text):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", size=16)
-    pdf.cell(200, 10, txt="Sample Proposal Document", ln=True, align="C")
     pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="This is a dummy proposal. Replace with actual content later.", ln=True, align="L")
-
-    pdf_str = pdf.output(dest='S').encode('latin1')
-    pdf_bytes = BytesIO(pdf_str)
+    for line in text.split("\n"):
+        pdf.multi_cell(0, 10, line)
+    pdf_output = pdf.output(dest='S').encode('latin1')
+    pdf_bytes = BytesIO(pdf_output)
     pdf_bytes.seek(0)
-
     return pdf_bytes
 
 @app.route('/generate_proposal_document', methods=['POST'])
-@auth.login_required
 def generate_proposal_document():
     if not request.is_json:
         return jsonify({"error": "Content-Type must be application/json"}), 415
 
     data = request.get_json()
-    if not data:
-        return jsonify({"error": "Invalid or missing JSON body"}), 400
-
-    transaction_id = data.get("transaction_id")
-    if not transaction_id:
+    if not data or "transaction_id" not in data:
         return jsonify({"error": "Missing 'transaction_id' in JSON body"}), 400
 
-    pdf_file = create_sample_pdf()
-    
+    transaction_id = data["transaction_id"]
+
+    # Build a simple prompt, you can customize this later
+    prompt = f"Write a professional sales proposal for the CPQ quote transaction ID: {transaction_id}."
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful sales assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1500,
+            temperature=0.7
+        )
+        proposal_text = response['choices'][0]['message']['content']
+    except Exception as e:
+        return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
+
+    pdf_file = create_pdf(proposal_text)
+
     return send_file(pdf_file,
                      mimetype='application/pdf',
                      as_attachment=True,
