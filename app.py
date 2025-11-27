@@ -1,8 +1,22 @@
 from flask import Flask, request, send_file, jsonify
 from io import BytesIO
 from fpdf import FPDF
+from flask_httpauth import HTTPBasicAuth
+from werkzeug.security import check_password_hash, generate_password_hash
+import os
 
 app = Flask(__name__)
+auth = HTTPBasicAuth()
+
+# Store username and hashed password in environment variables
+users = {
+    os.getenv("API_AUTH_USERNAME", "admin"): generate_password_hash(os.getenv("API_AUTH_PASSWORD", "secret"))
+}
+
+@auth.verify_password
+def verify_password(username, password):
+    if username in users and check_password_hash(users.get(username), password):
+        return username
 
 @app.route("/", methods=["GET"])
 def home():
@@ -16,7 +30,6 @@ def create_sample_pdf():
     pdf.set_font("Arial", size=12)
     pdf.cell(200, 10, txt="This is a dummy proposal. Replace with actual content later.", ln=True, align="L")
 
-    # Properly get PDF as bytes
     pdf_str = pdf.output(dest='S').encode('latin1')
     pdf_bytes = BytesIO(pdf_str)
     pdf_bytes.seek(0)
@@ -24,6 +37,7 @@ def create_sample_pdf():
     return pdf_bytes
 
 @app.route('/generate_proposal_document', methods=['POST'])
+@auth.login_required
 def generate_proposal_document():
     if not request.is_json:
         return jsonify({"error": "Content-Type must be application/json"}), 415
