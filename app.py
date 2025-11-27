@@ -4,6 +4,10 @@ from fpdf import FPDF
 
 app = Flask(__name__)
 
+@app.route("/", methods=["GET"])
+def home():
+    return "Hello from CPQ Proposal Generator!", 200
+
 def create_sample_pdf():
     pdf = FPDF()
     pdf.add_page()
@@ -18,11 +22,17 @@ def create_sample_pdf():
 
 @app.route('/generate_proposal_document', methods=['POST'])
 def generate_proposal_document():
-    data = request.json
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid or missing JSON body"}), 400
+
     transaction_id = data.get("transaction_id")
     if not transaction_id:
-        return jsonify({"error": "Missing transaction_id"}), 400
-    
+        return jsonify({"error": "Missing 'transaction_id' in JSON body"}), 400
+
     pdf_file = create_sample_pdf()
     
     return send_file(pdf_file,
