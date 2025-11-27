@@ -2,3 +2,5 @@ flask
 fpdf
 gunicorn
 flask-httpauth
+openai
+requests
