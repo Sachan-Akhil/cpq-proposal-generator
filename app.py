@@ -212,13 +212,18 @@ def compose_prompt(transaction, transaction_lines):
 
 
 def upload_pdf_to_cloudinary(pdf_bytes_io, transaction_id):
-    pdf_bytes_io.seek(0)  # Go to start of BytesIO object
+    pdf_bytes_io.seek(0)
+    timestamp = str(int(time.time()))  # ensure timestamp is digits only
+    public_id = f"proposals/Proposal_{transaction_id}_{timestamp}.pdf"
+    print(f"Uploading PDF with public_id: {public_id}")
+
     result = cloudinary.uploader.upload(
         pdf_bytes_io,
-        resource_type="raw",  # "raw" for PDFs/non-images
-        public_id=f"proposals/Proposal_{transaction_id}_{int(time.time())}.pdf",  # Added .pdf extension here
+        resource_type="raw",  # for PDF/non-image files
+        public_id=public_id,
         overwrite=True
     )
+    print("Upload result:", result)
     return result["secure_url"]
 
 
@@ -244,14 +249,12 @@ def generate_proposal_document():
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
         if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response  # Error tuple from OpenAI wrapper
+            return proposal_text_or_response  # error tuple from OpenAI wrapper
 
         pdf_file = create_pdf(proposal_text_or_response)  # BytesIO object
 
-        # Upload PDF to Cloudinary and get URL
         pdf_url = upload_pdf_to_cloudinary(pdf_file, transaction_id)
 
-        # Return JSON with PDF URL
         return jsonify({"pdf_url": pdf_url})
 
     except requests.HTTPError as e:
