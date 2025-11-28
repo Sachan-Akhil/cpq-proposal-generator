@@ -5,13 +5,24 @@ import base64
 import tempfile
 
 import requests
-from flask import Flask, request, jsonify, Response, send_file
+from flask import Flask, request, jsonify, Response
 from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
 
+import cloudinary
+import cloudinary.uploader
+
 app = Flask(__name__)
 client = OpenAI()
+
+# Configure Cloudinary with environment variables
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True
+)
 
 # Credentials for external API Basic Auth (Oracle CPQ)
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
@@ -209,6 +220,17 @@ def compose_prompt(transaction, transaction_lines):
     return prompt
 
 
+def upload_pdf_to_cloudinary(pdf_bytes_io, transaction_id):
+    pdf_bytes_io.seek(0)  # Go to start of BytesIO object
+    result = cloudinary.uploader.upload(
+        pdf_bytes_io,
+        resource_type="raw",  # "raw" for PDFs/non-images
+        public_id=f"proposals/Proposal_{transaction_id}_{int(time.time())}",
+        overwrite=True
+    )
+    return result["secure_url"]
+
+
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
 def generate_proposal_document():
@@ -231,22 +253,20 @@ def generate_proposal_document():
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
         if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response  # error response from OpenAI wrapper
+            return proposal_text_or_response  # Error tuple from OpenAI wrapper
 
-        pdf_file = create_pdf(proposal_text_or_response)
+        pdf_file = create_pdf(proposal_text_or_response)  # BytesIO object
 
-        # Send PDF directly as response to the client
-        return send_file(
-            pdf_file,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f"Proposal_{transaction_id}.pdf"
-        )
+        # Upload PDF to Cloudinary and get URL
+        pdf_url = upload_pdf_to_cloudinary(pdf_file, transaction_id)
 
-    except requests.HTTPError as http_err:
-        return jsonify({"error": f"HTTP error when fetching transaction data: {http_err}"}), 502
-    except Exception as err:
-        return jsonify({"error": f"Unexpected error: {err}"}), 500
+        # Return JSON with PDF URL
+        return jsonify({"pdf_url": pdf_url})
+
+    except requests.HTTPError as e:
+        return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
+    except Exception as e:
+        return jsonify({"error": f"Unexpected error: {e}"}), 500
 
 
 if __name__ == "__main__":
