@@ -2,22 +2,18 @@ import os
 import time
 from io import BytesIO
 import base64
-import tempfile
-
 import requests
 from flask import Flask, request, jsonify, Response
 from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
-
 import cloudinary
 import cloudinary.uploader
-import cloudinary.utils  # Needed for CloudinaryImage
 
 app = Flask(__name__)
 client = OpenAI()
 
-# Configure Cloudinary credentials
+# Configure Cloudinary with environment variables
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -25,9 +21,11 @@ cloudinary.config(
     secure=True
 )
 
+# Credentials for external API Basic Auth (Oracle CPQ)
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
 ORACLE_CPQ_PASSWORD = os.getenv("ORACLE_CPQ_PASSWORD")
 
+# Credentials for this service Basic Auth
 SERVICE_AUTH_USERNAME = os.getenv("API_AUTH_USERNAME")
 SERVICE_AUTH_PASSWORD = os.getenv("API_AUTH_PASSWORD")
 
@@ -49,16 +47,14 @@ def check_auth():
     return username == SERVICE_AUTH_USERNAME and password == SERVICE_AUTH_PASSWORD
 
 
-from functools import wraps
 def require_basic_auth(f):
-    @wraps(f)
     def decorated(*args, **kwargs):
         if not check_auth():
             return Response(
                 "Unauthorized", 401,
-                {"WWW-Authenticate": 'Basic realm="Login Required"'}
-            )
+                {"WWW-Authenticate": 'Basic realm="Login Required"'})
         return f(*args, **kwargs)
+    decorated.__name__ = f.__name__
     return decorated
 
 
@@ -83,25 +79,14 @@ def fetch_transaction_lines(base_url, process_var_name, transaction_id):
 def create_pdf(text, logo_path=None):
     pdf = FPDF()
     pdf.add_page()
-
     if logo_path:
         pdf.image(logo_path, x=10, y=8, w=33)
         pdf.ln(30)
-
     pdf.set_font("Arial", size=12)
-
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
-
-    # Fix for Windows: Save to temp file with delete=False, then read
-    with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
-        tmp_path = tmpfile.name
-    pdf.output(tmp_path)
-    with open(tmp_path, "rb") as f:
-        pdf_bytes = BytesIO(f.read())
-    os.unlink(tmp_path)
-    pdf_bytes.seek(0)
-    return pdf_bytes
+    pdf_str = pdf.output(dest='S').encode('latin1')  # Get PDF as bytes in memory
+    return BytesIO(pdf_str)
 
 
 def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
@@ -178,7 +163,7 @@ def compose_prompt(transaction, transaction_lines):
             qty = float(qty_raw)
         except (ValueError, TypeError):
             qty = 1
-        
+
         price_unit = line.get("_price_unit_price_each", {}).get("value", 0)
         currency_local = line.get("_price_unit_price_each", {}).get("currency", currency)
 
@@ -227,11 +212,11 @@ def compose_prompt(transaction, transaction_lines):
 
 
 def upload_pdf_to_cloudinary(pdf_bytes_io, transaction_id):
-    pdf_bytes_io.seek(0)
+    pdf_bytes_io.seek(0)  # Go to start of BytesIO object
     result = cloudinary.uploader.upload(
         pdf_bytes_io,
-        resource_type="raw",
-        public_id=f"proposals/Proposal_{transaction_id}",  # No .pdf extension here
+        resource_type="raw",  # "raw" for PDFs/non-images
+        public_id=f"proposals/CPO_Proposal_{transaction_id}",  # Added .pdf extension here
         overwrite=True
     )
     return result["secure_url"]
@@ -259,43 +244,20 @@ def generate_proposal_document():
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
         if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response
+            return proposal_text_or_response  # Error tuple from OpenAI wrapper
 
-        pdf_file = create_pdf(proposal_text_or_response)
+        pdf_file = create_pdf(proposal_text_or_response)  # BytesIO object
 
-        # Upload the PDF to Cloudinary, get the URL (without .pdf)
-        _ = upload_pdf_to_cloudinary(pdf_file, transaction_id)
+        # Upload PDF to Cloudinary and get URL
+        pdf_url = upload_pdf_to_cloudinary(pdf_file, transaction_id)
 
-        # Return your own Flask route that streams the PDF and forces download with .pdf filename
-        download_url = request.host_url.rstrip("/") + f"/download_proposal/{transaction_id}"
-
-        return jsonify({"pdf_url": download_url})
+        # Return JSON with PDF URL
+        return jsonify({"pdf_url": pdf_url})
 
     except requests.HTTPError as e:
         return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {e}"}), 500
-
-
-@app.route('/download_proposal/<transaction_id>', methods=['GET'])
-def download_proposal(transaction_id):
-    # Build Cloudinary URL
-    public_id = f"proposals/Proposal_{transaction_id}"
-    pdf_url = cloudinary.CloudinaryImage(public_id, resource_type="raw").build_url()
-
-    # Get PDF content from Cloudinary
-    resp = requests.get(pdf_url)
-    if resp.status_code != 200:
-        return jsonify({"error": "File not found"}), 404
-
-    # Stream PDF with a Content-Disposition header to suggest filename to browser
-    return Response(
-        resp.content,
-        mimetype="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename=Proposal_{transaction_id}.pdf'
-        }
-    )
 
 
 if __name__ == "__main__":
