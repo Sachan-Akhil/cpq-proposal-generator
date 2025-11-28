@@ -2,11 +2,14 @@ import os
 import time
 from io import BytesIO
 import base64
+import tempfile
+
 import requests
 from flask import Flask, request, jsonify, Response
 from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
+
 import cloudinary
 import cloudinary.uploader
 
@@ -85,8 +88,14 @@ def create_pdf(text, logo_path=None):
     pdf.set_font("Arial", size=12)
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
-    pdf_str = pdf.output(dest='S').encode('latin1')  # Get PDF as bytes in memory
-    return BytesIO(pdf_str)
+
+    # Write PDF to a temp file then read bytes, avoiding encoding issues
+    with tempfile.NamedTemporaryFile(delete=True) as tmpfile:
+        pdf.output(tmpfile.name)
+        tmpfile.seek(0)
+        pdf_bytes = BytesIO(tmpfile.read())
+    pdf_bytes.seek(0)
+    return pdf_bytes
 
 
 def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
@@ -216,7 +225,7 @@ def upload_pdf_to_cloudinary(pdf_bytes_io, transaction_id):
     result = cloudinary.uploader.upload(
         pdf_bytes_io,
         resource_type="raw",  # "raw" for PDFs/non-images
-        public_id=f"proposals/Proposal_{transaction_id}_{int(time.time())}.pdf",  # Added .pdf extension here
+        public_id=f"proposals/Proposal_{transaction_id}",
         overwrite=True
     )
     return result["secure_url"]
