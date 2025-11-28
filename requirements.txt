@@ -4,4 +4,4 @@ gunicorn
 flask-httpauth
 openai
 requests
-supabase
+cloudinary
