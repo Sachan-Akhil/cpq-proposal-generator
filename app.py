@@ -13,7 +13,7 @@ import cloudinary.uploader
 app = Flask(__name__)
 client = OpenAI()
 
-# Configure Cloudinary with env variables
+# Configure Cloudinary with environment variables
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -21,15 +21,17 @@ cloudinary.config(
     secure=True
 )
 
-# Oracle CPQ credentials for Basic Auth
+# Credentials for external API Basic Auth (Oracle CPQ)
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
 ORACLE_CPQ_PASSWORD = os.getenv("ORACLE_CPQ_PASSWORD")
 
-# This service's Basic Auth credentials
+# Credentials for this service Basic Auth
 SERVICE_AUTH_USERNAME = os.getenv("API_AUTH_USERNAME")
 SERVICE_AUTH_PASSWORD = os.getenv("API_AUTH_PASSWORD")
 
-HEADERS = {"Accept": "application/json"}
+HEADERS = {
+    "Accept": "application/json"
+}
 
 
 def check_auth():
@@ -50,8 +52,7 @@ def require_basic_auth(f):
         if not check_auth():
             return Response(
                 "Unauthorized", 401,
-                {"WWW-Authenticate": 'Basic realm="Login Required"'}
-            )
+                {"WWW-Authenticate": 'Basic realm="Login Required"'})
         return f(*args, **kwargs)
     decorated.__name__ = f.__name__
     return decorated
@@ -84,8 +85,8 @@ def create_pdf(text, logo_path=None):
     pdf.set_font("Arial", size=12)
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
-    pdf_bytes = pdf.output(dest='S').encode('latin1')
-    return BytesIO(pdf_bytes)
+    pdf_str = pdf.output(dest='S').encode('latin1')  # Get PDF as bytes in memory
+    return BytesIO(pdf_str)
 
 
 def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
@@ -134,9 +135,9 @@ def compose_prompt(transaction, transaction_lines):
 
     customer_address_parts = []
     for field in ["_customer_t_address", "_customer_t_city", "_customer_t_state", "_customer_t_zip", "_customer_t_country"]:
-        val = extract_string(transaction.get(field, ""))
-        if val:
-            customer_address_parts.append(val)
+        value = extract_string(transaction.get(field, ""))
+        if value:
+            customer_address_parts.append(value)
     customer_address = ", ".join(customer_address_parts)
 
     contact_email = extract_string(transaction.get("_customer_t_email", "N/A"))
@@ -211,18 +212,13 @@ def compose_prompt(transaction, transaction_lines):
 
 
 def upload_pdf_to_cloudinary(pdf_bytes_io, transaction_id):
-    pdf_bytes_io.seek(0)
-    timestamp = str(int(time.time()))  # numeric timestamp only
-    public_id = f"proposals/Proposal_{transaction_id}_{timestamp}.pdf"
-    print(f"Uploading PDF with public_id: {public_id}")
-
+    pdf_bytes_io.seek(0)  # Go to start of BytesIO object
     result = cloudinary.uploader.upload(
         pdf_bytes_io,
-        resource_type="raw",
-        public_id=public_id,
+        resource_type="raw",  # "raw" for PDFs/non-images
+        public_id=f"proposals/Proposal_{transaction_id}_{int(time.time())}.pdf",  # Added .pdf extension here
         overwrite=True
     )
-    print("Upload result:", result)
     return result["secure_url"]
 
 
@@ -248,16 +244,18 @@ def generate_proposal_document():
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
         if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response  # early error return from OpenAI call
+            return proposal_text_or_response  # Error tuple from OpenAI wrapper
 
-        pdf_file = create_pdf(proposal_text_or_response)
+        pdf_file = create_pdf(proposal_text_or_response)  # BytesIO object
 
+        # Upload PDF to Cloudinary and get URL
         pdf_url = upload_pdf_to_cloudinary(pdf_file, transaction_id)
 
+        # Return JSON with PDF URL
         return jsonify({"pdf_url": pdf_url})
 
     except requests.HTTPError as e:
-        return jsonify({"error": f"HTTP error fetching transaction data: {e}"}), 502
+        return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {e}"}), 500
 
