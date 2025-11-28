@@ -12,11 +12,12 @@ from requests.auth import HTTPBasicAuth
 
 import cloudinary
 import cloudinary.uploader
+import cloudinary.utils  # Needed for CloudinaryImage
 
 app = Flask(__name__)
 client = OpenAI()
 
-# Configure Cloudinary using environment variables for credentials and cloud name.
+# Configure Cloudinary credentials
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -24,11 +25,9 @@ cloudinary.config(
     secure=True
 )
 
-# Oracle CPQ API credentials for Basic Authentication.
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
 ORACLE_CPQ_PASSWORD = os.getenv("ORACLE_CPQ_PASSWORD")
 
-# Credentials to protect this API endpoint with Basic Authentication.
 SERVICE_AUTH_USERNAME = os.getenv("API_AUTH_USERNAME")
 SERVICE_AUTH_PASSWORD = os.getenv("API_AUTH_PASSWORD")
 
@@ -38,15 +37,10 @@ HEADERS = {
 
 
 def check_auth():
-    """
-    Verifies the Basic Authentication header sent with the request.
-    Returns True if credentials match environment variables, else False.
-    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Basic "):
         return False
     try:
-        # Decode credentials from base64 format.
         encoded = auth.split(" ", 1)[1]
         decoded = base64.b64decode(encoded).decode('utf-8')
         username, password = decoded.split(":", 1)
@@ -55,11 +49,9 @@ def check_auth():
     return username == SERVICE_AUTH_USERNAME and password == SERVICE_AUTH_PASSWORD
 
 
+from functools import wraps
 def require_basic_auth(f):
-    """
-    Decorator to protect a route with Basic Authentication.
-    Returns 401 Unauthorized if auth fails.
-    """
+    @wraps(f)
     def decorated(*args, **kwargs):
         if not check_auth():
             return Response(
@@ -67,15 +59,10 @@ def require_basic_auth(f):
                 {"WWW-Authenticate": 'Basic realm="Login Required"'}
             )
         return f(*args, **kwargs)
-    decorated.__name__ = f.__name__
     return decorated
 
 
 def fetch_transaction(base_url, process_var_name, transaction_id):
-    """
-    Fetch the main transaction JSON data from Oracle CPQ REST API.
-    Raises HTTPError if request fails.
-    """
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
     url = f"{api_base}/{transaction_id}"
     resp = requests.get(url, headers=HEADERS,
@@ -85,10 +72,6 @@ def fetch_transaction(base_url, process_var_name, transaction_id):
 
 
 def fetch_transaction_lines(base_url, process_var_name, transaction_id):
-    """
-    Fetch the transaction line items (products/services) for given transaction.
-    Raises HTTPError for any HTTP failure.
-    """
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
     url = f"{api_base}/{transaction_id}/transactionLine"
     resp = requests.get(url, headers=HEADERS,
@@ -98,41 +81,30 @@ def fetch_transaction_lines(base_url, process_var_name, transaction_id):
 
 
 def create_pdf(text, logo_path=None):
-    """
-    Create a PDF file from plain text with optional logo.
-    Returns a BytesIO stream containing the PDF binary data.
-    """
     pdf = FPDF()
     pdf.add_page()
 
-    # Add logo if provided, positioned top-left.
     if logo_path:
         pdf.image(logo_path, x=10, y=8, w=33)
-        pdf.ln(30)  # Line break after logo
+        pdf.ln(30)
 
-    # Set standard font and font size.
     pdf.set_font("Arial", size=12)
 
-    # Write the text, respecting newlines.
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
 
-    # Write PDF to a temporary file to avoid encoding issues,
-    # then read the binary content into BytesIO to return.
-    with tempfile.NamedTemporaryFile(delete=True) as tmpfile:
-        pdf.output(tmpfile.name)
-        tmpfile.seek(0)
-        pdf_bytes = BytesIO(tmpfile.read())
-
+    # Fix for Windows: Save to temp file with delete=False, then read
+    with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
+        tmp_path = tmpfile.name
+    pdf.output(tmp_path)
+    with open(tmp_path, "rb") as f:
+        pdf_bytes = BytesIO(f.read())
+    os.unlink(tmp_path)
     pdf_bytes.seek(0)
     return pdf_bytes
 
 
 def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
-    """
-    Calls OpenAI's chat completion API with retry logic on rate-limiting (HTTP 429).
-    Returns the generated text on success or error JSON & status on failure.
-    """
     for attempt in range(max_retries):
         try:
             response = client.chat.completions.create(
@@ -146,22 +118,16 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
             )
             return response.choices[0].message.content
         except Exception as e:
-            # Handle rate limit by backing off and retrying.
             if hasattr(e, "status_code") and e.status_code == 429:
                 if attempt < max_retries - 1:
                     time.sleep(backoff ** attempt)
                 else:
                     return jsonify({"error": "OpenAI API rate limit exceeded. Please try again later."}), 429
             else:
-                # Return generic 500 error for other exceptions.
                 return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
 
 def extract_string(field_value):
-    """
-    Helper to safely extract string data from a field that might be a string,
-    dict with certain keys, None, or other types.
-    """
     if isinstance(field_value, str):
         return field_value.strip()
     elif isinstance(field_value, dict):
@@ -176,17 +142,12 @@ def extract_string(field_value):
 
 
 def compose_prompt(transaction, transaction_lines):
-    """
-    Composes the detailed prompt text for OpenAI from transaction and lines data.
-    Includes customer info, transaction details, and line item breakdowns.
-    """
     customer_name = extract_string(transaction.get("_customer_t_company_name", "Unknown Customer"))
     customer_contact_name = " ".join(filter(None, [
         extract_string(transaction.get("_customer_t_first_name", "")),
         extract_string(transaction.get("_customer_t_last_name", ""))
     ])).strip()
 
-    # Build customer address string from available fields.
     customer_address_parts = []
     for field in ["_customer_t_address", "_customer_t_city", "_customer_t_state", "_customer_t_zip", "_customer_t_country"]:
         value = extract_string(transaction.get(field, ""))
@@ -207,7 +168,6 @@ def compose_prompt(transaction, transaction_lines):
 
     proposal_date = time.strftime("%B %d, %Y")
 
-    # Format each line item in readable text.
     lines_text = ""
     for i, line in enumerate(transaction_lines.get("items", []), start=1):
         part_number = extract_string(line.get("_part_number", "N/A"))
@@ -236,7 +196,6 @@ def compose_prompt(transaction, transaction_lines):
             f"   Estimated Shipping Date: {shipping_date}\n\n"
         )
 
-    # Complete prompt instructing OpenAI to generate a professional proposal.
     prompt = (
         f"Generate a detailed and professional sales proposal document.\n"
         f"Proposal Date: {proposal_date}\n"
@@ -268,17 +227,11 @@ def compose_prompt(transaction, transaction_lines):
 
 
 def upload_pdf_to_cloudinary(pdf_bytes_io, transaction_id):
-    """
-    Uploads the PDF stored in a BytesIO stream to Cloudinary as a 'raw' file.
-    The public_id is set without a '.pdf' extension to avoid issues.
-
-    Returns the secure URL of the uploaded file.
-    """
-    pdf_bytes_io.seek(0)  # Reset stream position to beginning
+    pdf_bytes_io.seek(0)
     result = cloudinary.uploader.upload(
         pdf_bytes_io,
-        resource_type="raw",  # Raw for PDFs and other non-image resources
-        public_id=f"proposals/Proposal_{transaction_id}",  # DO NOT include '.pdf' here
+        resource_type="raw",
+        public_id=f"proposals/Proposal_{transaction_id}",  # No .pdf extension here
         overwrite=True
     )
     return result["secure_url"]
@@ -287,18 +240,6 @@ def upload_pdf_to_cloudinary(pdf_bytes_io, transaction_id):
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
 def generate_proposal_document():
-    """
-    API endpoint to generate the sales proposal PDF, upload it to Cloudinary,
-    and return a URL for download.
-
-    Expects JSON with:
-    - transaction_id
-    - base_url
-    - process_var_name
-
-    Protected by Basic Authentication.
-    """
-
     if not request.is_json:
         return jsonify({"error": "Content-Type must be application/json"}), 415
 
@@ -312,41 +253,50 @@ def generate_proposal_document():
     process_var_name = data["process_var_name"]
 
     try:
-        # Retrieve necessary data from external APIs
         transaction = fetch_transaction(base_url, process_var_name, transaction_id)
         transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
-
-        # Create prompt text for OpenAI
         prompt = compose_prompt(transaction, transaction_lines)
-
-        # Generate proposal content with OpenAI
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
-        # If OpenAI returns an error tuple, return it immediately
         if isinstance(proposal_text_or_response, tuple):
             return proposal_text_or_response
 
-        # Create the PDF document from generated text
         pdf_file = create_pdf(proposal_text_or_response)
 
-        # Upload PDF to Cloudinary, get base URL (without .pdf extension)
-        pdf_url = upload_pdf_to_cloudinary(pdf_file, transaction_id)
+        # Upload the PDF to Cloudinary, get the URL (without .pdf)
+        _ = upload_pdf_to_cloudinary(pdf_file, transaction_id)
 
-        # Important: Append .pdf extension to URL so browsers correctly recognize the file type on download
-        if not pdf_url.endswith(".pdf"):
-            pdf_url += ".pdf"
+        # Return your own Flask route that streams the PDF and forces download with .pdf filename
+        download_url = request.host_url.rstrip("/") + f"/download_proposal/{transaction_id}"
 
-        # Respond with JSON containing the PDF download URL
-        return jsonify({"pdf_url": pdf_url})
+        return jsonify({"pdf_url": download_url})
 
     except requests.HTTPError as e:
-        # Return error if API call to external service fails
         return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
     except Exception as e:
-        # Catch all other exceptions to avoid server crashes
         return jsonify({"error": f"Unexpected error: {e}"}), 500
 
 
+@app.route('/download_proposal/<transaction_id>', methods=['GET'])
+def download_proposal(transaction_id):
+    # Build Cloudinary URL
+    public_id = f"proposals/Proposal_{transaction_id}"
+    pdf_url = cloudinary.CloudinaryImage(public_id, resource_type="raw").build_url()
+
+    # Get PDF content from Cloudinary
+    resp = requests.get(pdf_url)
+    if resp.status_code != 200:
+        return jsonify({"error": "File not found"}), 404
+
+    # Stream PDF with a Content-Disposition header to suggest filename to browser
+    return Response(
+        resp.content,
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename=Proposal_{transaction_id}.pdf'
+        }
+    )
+
+
 if __name__ == "__main__":
-    # Run Flask app in debug mode for development
     app.run(debug=True)
