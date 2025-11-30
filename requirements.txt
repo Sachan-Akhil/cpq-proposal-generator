@@ -1,5 +1,5 @@
 flask
-fpdf2
+reportlab
 gunicorn
 flask-httpauth
 openai
