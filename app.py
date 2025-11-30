@@ -226,7 +226,7 @@ def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
             pdf_bytes_io,
             S3_BUCKET_NAME,
             s3_key,
-            ExtraArgs={"ACL": "public-read", "ContentType": "application/pdf"}
+            ExtraArgs={"ContentType": "application/pdf"}
         )
     except NoCredentialsError:
         raise Exception("AWS credentials not found or invalid")
