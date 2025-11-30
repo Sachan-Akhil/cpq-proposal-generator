@@ -14,11 +14,13 @@ from botocore.exceptions import NoCredentialsError, ClientError
 
 # REPORTLAB IMPORTS
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.colors import HexColor, gray, colors
+from reportlab.lib.colors import HexColor, gray, black, white
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
-from reportlab.platypus import (BaseDocTemplate, Frame, PageTemplate, Paragraph,
-                                Spacer, ListFlowable, ListItem, PageBreak, Table, TableStyle)
+from reportlab.platypus import (
+    BaseDocTemplate, Frame, PageTemplate, Paragraph,
+    Spacer, ListFlowable, ListItem, PageBreak, Table, TableStyle
+)
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
@@ -26,7 +28,7 @@ from reportlab.pdfgen import canvas
 app = Flask(__name__)
 client = OpenAI()
 
-# ENV vars to set
+# Environment variables
 AWS_REGION = os.getenv("AWS_REGION")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 if not AWS_REGION or not S3_BUCKET_NAME:
@@ -39,9 +41,15 @@ SERVICE_AUTH_PASSWORD = os.getenv("API_AUTH_PASSWORD")
 
 s3_client = boto3.client('s3', region_name=AWS_REGION)
 
+COLORS = {
+    "primary": HexColor("#003366"),    # Navy Blue
+    "secondary": HexColor("#0073e6"),  # Bright Blue
+    "gray": gray,
+    "black": black,
+    "white": white,
+}
 
-# --- Basic Auth ---
-
+# Basic Auth check
 def check_auth():
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Basic "):
@@ -54,7 +62,6 @@ def check_auth():
         return False
     return username == SERVICE_AUTH_USERNAME and password == SERVICE_AUTH_PASSWORD
 
-
 def require_basic_auth(f):
     def decorated(*args, **kwargs):
         if not check_auth():
@@ -63,11 +70,8 @@ def require_basic_auth(f):
     decorated.__name__ = f.__name__
     return decorated
 
-
-# --- Oracle CPQ API fetch ---
-
+# Oracle CPQ fetch functions
 HEADERS = {"Accept": "application/json"}
-
 
 def fetch_transaction(base_url, process_var_name, transaction_id):
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
@@ -76,7 +80,6 @@ def fetch_transaction(base_url, process_var_name, transaction_id):
     resp.raise_for_status()
     return resp.json()
 
-
 def fetch_transaction_lines(base_url, process_var_name, transaction_id):
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
     url = f"{api_base}/{transaction_id}/transactionLine"
@@ -84,9 +87,7 @@ def fetch_transaction_lines(base_url, process_var_name, transaction_id):
     resp.raise_for_status()
     return resp.json()
 
-
-# --- Compose prompt for OpenAI ---
-
+# Compose prompt for OpenAI
 def extract_string(field_value):
     if isinstance(field_value, str):
         return field_value.strip()
@@ -99,7 +100,6 @@ def extract_string(field_value):
         return ""
     else:
         return str(field_value)
-
 
 def compose_prompt(transaction, transaction_lines):
     customer_name = extract_string(transaction.get("_customer_t_company_name", "Unknown Customer"))
@@ -186,9 +186,7 @@ def compose_prompt(transaction, transaction_lines):
     )
     return prompt
 
-
-# --- OpenAI chat completions API with retry ---
-
+# OpenAI retry handler
 def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
     for attempt in range(max_retries):
         try:
@@ -211,13 +209,10 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
             else:
                 return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
-
-# --- AWS S3 upload ---
-
+# Upload PDF to S3
 def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
     pdf_bytes_io.seek(0)
     s3_key = f"proposals/CPO_Proposal_{transaction_id}.pdf"
-
     try:
         s3_client.upload_fileobj(
             pdf_bytes_io,
@@ -237,8 +232,7 @@ def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
 
     return url
 
-
-# --- REPORTLAB PDF GENERATOR ---
+# PDF Generation
 
 def register_fonts():
     base_dir = os.path.dirname(__file__)
@@ -249,14 +243,6 @@ def register_fonts():
         pdfmetrics.registerFont(TTFont("DejaVuSans-Italic", font_path))
     else:
         print("Warning: DejaVuSans.ttf font not found, defaulting to Helvetica")
-
-
-COLORS = {
-    "primary": HexColor("#003366"),  # Navy Blue
-    "secondary": HexColor("#0073e6"),  # Bright Blue
-    "gray": gray,
-}
-
 
 def get_styles():
     styles = getSampleStyleSheet()
@@ -287,7 +273,6 @@ def get_styles():
     ))
     return styles
 
-
 class ProposalDocTemplate(BaseDocTemplate):
     def __init__(self, buffer, **kwargs):
         super().__init__(buffer, pagesize=A4, **kwargs)
@@ -295,42 +280,41 @@ class ProposalDocTemplate(BaseDocTemplate):
         frame = Frame(margin, margin + 40, A4[0] - 2 * margin, A4[1] - 2 * margin - 60, id='normal')
         self.addPageTemplates([PageTemplate(id='normal', frames=frame, onPage=self.draw_header_footer)])
 
-    def draw_header_footer(self, canvas: canvas.Canvas, doc):
+    def draw_header_footer(self, canvas_obj, doc):
         width, height = A4
-        canvas.saveState()
+        canvas_obj.saveState()
 
         # Header
         fontname = 'DejaVuSans-Bold' if 'DejaVuSans-Bold' in pdfmetrics.getRegisteredFontNames() else 'Helvetica-Bold'
-        canvas.setFont(fontname, 14)
-        canvas.setFillColor(COLORS['primary'])
-        canvas.drawString(36, height - 50, "Your Company Name")
+        canvas_obj.setFont(fontname, 14)
+        canvas_obj.setFillColor(COLORS['primary'])
+        canvas_obj.drawString(36, height - 50, "Your Company Name")
 
         fontname = 'DejaVuSans' if 'DejaVuSans' in pdfmetrics.getRegisteredFontNames() else 'Helvetica'
-        canvas.setFont(fontname, 10)
-        canvas.setFillColor(COLORS['secondary'])
-        canvas.drawString(36, height - 65, "Sales Proposal Document")
+        canvas_obj.setFont(fontname, 10)
+        canvas_obj.setFillColor(COLORS['secondary'])
+        canvas_obj.drawString(36, height - 65, "Sales Proposal Document")
 
         # Header line
-        canvas.setStrokeColor(COLORS['primary'])
-        canvas.setLineWidth(1)
-        canvas.line(36, height - 75, width - 36, height - 75)
+        canvas_obj.setStrokeColor(COLORS['primary'])
+        canvas_obj.setLineWidth(1)
+        canvas_obj.line(36, height - 75, width - 36, height - 75)
 
         # Footer line
-        canvas.setStrokeColor(COLORS['primary'])
-        canvas.setLineWidth(0.5)
-        canvas.line(36, 55, width - 36, 55)
+        canvas_obj.setStrokeColor(COLORS['primary'])
+        canvas_obj.setLineWidth(0.5)
+        canvas_obj.line(36, 55, width - 36, 55)
 
-        # Footer text
+        # Footer Text
         fontname = 'DejaVuSans-Italic' if 'DejaVuSans-Italic' in pdfmetrics.getRegisteredFontNames() else 'Helvetica-Oblique'
-        canvas.setFont(fontname, 9)
-        canvas.setFillColor(COLORS['gray'])
-        canvas.drawString(36, 40, "Contact: sales@example.com | +1 555 123 4567 | www.yourcompany.com")
+        canvas_obj.setFont(fontname, 9)
+        canvas_obj.setFillColor(COLORS['gray'])
+        canvas_obj.drawString(36, 40, "Contact: sales@example.com | +1 555 123 4567 | www.yourcompany.com")
 
         # Page number right aligned
-        canvas.drawRightString(width - 36, 40, f"Page {doc.page}")
+        canvas_obj.drawRightString(width - 36, 40, f"Page {doc.page}")
 
-        canvas.restoreState()
-
+        canvas_obj.restoreState()
 
 def markdown_to_flowables(text, styles):
     flowables = []
@@ -384,107 +368,4 @@ def markdown_to_flowables(text, styles):
             in_bullet = False
         buffer_paragraph.append(line)
     flush_bullets()
-    flush_paragraph()
-    return flowables
-
-
-def build_line_items_table(items, styles):
-    from reportlab.platypus import Table, TableStyle
-
-    data = [[
-        Paragraph('<b>Product</b>', styles['BodyText']),
-        Paragraph('<b>Qty</b>', styles['BodyText']),
-        Paragraph('<b>Unit Price</b>', styles['BodyText']),
-        Paragraph('<b>Line Total</b>', styles['BodyText']),
-        Paragraph('<b>Lead Time</b>', styles['BodyText']),
-        Paragraph('<b>Est. Shipping</b>', styles['BodyText'])
-    ]]
-    for line in items:
-        desc = line.get("_part_desc") or line.get("displayedItemName_l") or "N/A"
-        try:
-            qty = int(float(line.get("requestedQuantity_l", 1)))
-        except:
-            qty = 1
-        price_unit = line.get("_price_unit_price_each", {}).get("value", 0)
-        line_total = price_unit * qty
-        lead_time = line.get("_part_lead_time", "N/A")
-        ship_date = line.get("oRCL_ERP_RequestShipDate_l", "N/A")
-
-        data.append([str(desc), str(qty), f"${price_unit:,.2f}", f"${line_total:,.2f}", str(lead_time), str(ship_date)])
-
-    table = Table(data, colWidths=[150, 40, 70, 70, 70, 90])
-    style = TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), COLORS['primary']),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-        ('FONTNAME', (0, 1), (-1, -1), 'DejaVuSans'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-    ])
-    table.setStyle(style)
-    return table
-
-
-def create_proposal_pdf_reportlab(proposal_text, line_items):
-    register_fonts()
-    buffer = BytesIO()
-    doc = ProposalDocTemplate(buffer)
-    styles = get_styles()
-
-    flowables = markdown_to_flowables(proposal_text, styles)
-    flowables.append(Spacer(1, 20))
-    if line_items:
-        flowables.append(Paragraph("Line Items", styles['Heading1']))
-        flowables.append(Spacer(1, 12))
-        flowables.append(build_line_items_table(line_items, styles))
-
-    flowables.append(Spacer(1, 30))
-    flowables.append(Paragraph("<b>Thank you for your business!</b>", styles['Heading1']))
-
-    doc.build(flowables)
-    buffer.seek(0)
-    return buffer
-
-
-# --- Flask route ---
-
-@app.route('/generate_proposal_document', methods=['POST'])
-@require_basic_auth
-def generate_proposal_document():
-    if not request.is_json:
-        return jsonify({"error": "Content-Type must be application/json"}), 415
-
-    data = request.get_json()
-    required_fields = ["transaction_id", "base_url", "process_var_name"]
-    if not data or not all(field in data for field in required_fields):
-        return jsonify({"error": f"Missing one of {required_fields} in JSON body"}), 400
-
-    transaction_id = data["transaction_id"]
-    base_url = data["base_url"].rstrip("/")
-    process_var_name = data["process_var_name"]
-
-    try:
-        transaction = fetch_transaction(base_url, process_var_name, transaction_id)
-        transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
-        prompt = compose_prompt(transaction, transaction_lines)
-        proposal_text_or_response = generate_proposal_with_retry(prompt)
-
-        if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response  # error response
-
-        pdf_file = create_proposal_pdf_reportlab(proposal_text_or_response, transaction_lines.get("items", []))
-        pdf_url = upload_pdf_to_s3(pdf_file, transaction_id)
-
-        return jsonify({"pdf_url": pdf_url})
-
-    except requests.HTTPError as e:
-        return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
-    except Exception as e:
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
+    flush
