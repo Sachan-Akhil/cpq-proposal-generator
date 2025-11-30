@@ -176,7 +176,7 @@ def render_simple_table(pdf, table_lines):
 # Be sure to update your upload_pdf_to_s3 function to:
 def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
     pdf_bytes_io.seek(0)
-    s3_key = f"proposals/CPO_Proposal_{transaction_id}.pdf"
+    s3_key = f"proposals/CPQ_Proposal_{transaction_id}.pdf"
 
     try:
         s3_client.upload_fileobj(
