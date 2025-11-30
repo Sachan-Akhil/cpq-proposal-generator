@@ -7,19 +7,21 @@ from flask import Flask, request, jsonify, Response
 from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
-import cloudinary
-import cloudinary.uploader
+
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
 
 app = Flask(__name__)
 client = OpenAI()
 
-# Configure Cloudinary with environment variables
-cloudinary.config(
-    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.getenv("CLOUDINARY_API_KEY"),
-    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-    secure=True
-)
+# AWS S3 Setup
+AWS_REGION = os.getenv("AWS_REGION")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+
+if not AWS_REGION or not S3_BUCKET_NAME:
+    raise Exception("AWS_REGION and S3_BUCKET_NAME environment variables must be set")
+
+s3_client = boto3.client('s3', region_name=AWS_REGION)
 
 # Credentials for external API Basic Auth (Oracle CPQ)
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
@@ -211,15 +213,35 @@ def compose_prompt(transaction, transaction_lines):
     return prompt
 
 
-def upload_pdf_to_cloudinary(pdf_bytes_io, transaction_id):
+def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
+    """
+    Upload PDF to AWS S3.
+    Returns the public URL to the uploaded PDF.
+    """
     pdf_bytes_io.seek(0)  # Go to start of BytesIO object
-    result = cloudinary.uploader.upload(
-        pdf_bytes_io,
-        resource_type="raw",  # "raw" for PDFs/non-images
-        public_id=f"proposals/CPO_Proposal_{transaction_id}",  # Added .pdf extension here
-        overwrite=True
-    )
-    return result["secure_url"]
+    s3_key = f"proposals/CPO_Proposal_{transaction_id}.pdf"
+
+    try:
+        s3_client.upload_fileobj(
+            pdf_bytes_io,
+            S3_BUCKET_NAME,
+            s3_key,
+            ExtraArgs={
+                "ACL": "public-read",
+                "ContentType": "application/pdf"
+            }
+        )
+    except NoCredentialsError:
+        raise Exception("AWS credentials not found or invalid")
+    except ClientError as e:
+        raise Exception(f"Failed to upload to S3: {e}")
+
+    if AWS_REGION == "us-east-1":
+        url = f"https://{S3_BUCKET_NAME}.s3.amazonaws.com/{s3_key}"
+    else:
+        url = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
+
+    return url
 
 
 @app.route('/generate_proposal_document', methods=['POST'])
@@ -248,8 +270,8 @@ def generate_proposal_document():
 
         pdf_file = create_pdf(proposal_text_or_response)  # BytesIO object
 
-        # Upload PDF to Cloudinary and get URL
-        pdf_url = upload_pdf_to_cloudinary(pdf_file, transaction_id)
+        # Upload PDF to S3
+        pdf_url = upload_pdf_to_s3(pdf_file, transaction_id)
 
         # Return JSON with PDF URL
         return jsonify({"pdf_url": pdf_url})
