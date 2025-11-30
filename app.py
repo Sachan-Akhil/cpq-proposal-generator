@@ -91,7 +91,7 @@ def create_pdf(text, logo_path=None):
         else:
             pdf.multi_cell(w=usable_width, h=10, txt=line)
 
-    pdf_bytes = pdf.output(dest='S').encode('latin-1')
+    pdf_bytes = pdf.output(dest='S')  # returns a bytearray, no .encode() needed
     return BytesIO(pdf_bytes)
 
 
