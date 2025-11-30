@@ -68,165 +68,122 @@ def fetch_transaction_lines(base_url, process_var_name, transaction_id):
     return resp.json()
 
 
-def create_pdf(text, logo_path=None):
+def create_pdf(proposal_text, logo_path=None):
     pdf = FPDF(format='A4')
-    pdf.set_left_margin(10)
-    pdf.set_right_margin(10)
-    pdf.set_top_margin(10)
+    pdf.set_left_margin(15)
+    pdf.set_right_margin(15)
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
     font_path = os.path.join(os.path.dirname(__file__), 'DejaVuSans.ttf')
     pdf.add_font('DejaVu', '', font_path, uni=True)
+    pdf.add_font('DejaVu', 'B', font_path, uni=True)
+
+    # Add logo if exists
+    if logo_path and os.path.isfile(logo_path):
+        pdf.image(logo_path, x=15, y=15, w=40)
+        pdf.ln(25)
+    else:
+        pdf.ln(20)
+
+    # Split lines
+    lines = proposal_text.split('\n')
+
+    pdf.set_font('DejaVu', 'B', 18)
+    # Title line (first line)
+    if lines:
+        pdf.multi_cell(0, 12, lines[0])
+        pdf.ln(5)
+
     pdf.set_font('DejaVu', '', 12)
 
-    if logo_path:
-        pdf.image(logo_path, x=10, y=8, w=33)
-        pdf.ln(30)
-
+    bullet_indent = 10
+    normal_indent = 5
     usable_width = pdf.w - pdf.l_margin - pdf.r_margin
 
-    for line in text.split("\n"):
-        if not line.strip():
-            pdf.ln(10)
-        else:
-            pdf.multi_cell(w=usable_width, h=10, txt=line)
+    i = 1
+    while i < len(lines):
+        line = lines[i].strip()
 
-    pdf_bytes = pdf.output(dest='S')  # returns a bytearray, no .encode() needed
+        if not line:  # Blank line for spacing
+            pdf.ln(8)
+            i += 1
+            continue
+
+        if line.startswith("### "):  # Section header
+            header_text = line[4:].strip()
+            pdf.set_font('DejaVu', 'B', 14)
+            pdf.ln(5)
+            pdf.cell(0, 10, header_text, ln=True)
+            pdf.ln(2)
+            pdf.set_font('DejaVu', '', 12)
+            i += 1
+            continue
+
+        if line.startswith("-"):  # Bullet list item
+            pdf.set_x(pdf.l_margin + bullet_indent)
+            pdf.multi_cell(usable_width - bullet_indent, 8, line)
+            i += 1
+            continue
+
+        if "|" in line:  # Table starts
+            table_lines = []
+            while i < len(lines) and "|" in lines[i]:
+                table_lines.append(lines[i].strip())
+                i += 1
+            render_simple_table(pdf, table_lines)
+            pdf.ln(5)
+            continue
+
+        # Normal paragraph text
+        pdf.set_x(pdf.l_margin + normal_indent)
+        pdf.multi_cell(usable_width - normal_indent, 8, line)
+        i += 1
+
+    pdf_bytes = pdf.output(dest='S')
     return BytesIO(pdf_bytes)
 
 
-def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
-    for attempt in range(max_retries):
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": "You are a helpful sales assistant who writes professional and detailed sales proposals."},
-                    {"role": "user", "content": prompt_text}
-                ],
-                max_tokens=700,
-                temperature=0.5,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            if hasattr(e, "status_code") and e.status_code == 429:
-                if attempt < max_retries - 1:
-                    time.sleep(backoff ** attempt)
-                else:
-                    return jsonify({"error": "OpenAI API rate limit exceeded. Please try again later."}), 429
-            else:
-                return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
+def render_simple_table(pdf, table_lines):
+    if not table_lines:
+        return
+
+    # Parse columns from first line (header)
+    cols = [c.strip() for c in table_lines[0].split("|") if c.strip() != ""]
+    col_count = len(cols)
+    page_width = pdf.w - pdf.l_margin - pdf.r_margin
+    col_width = page_width / col_count
+
+    # Header row: gray fill and bold
+    pdf.set_font('DejaVu', 'B', 12)
+    pdf.set_fill_color(230, 230, 230)
+    for col in cols:
+        pdf.cell(col_width, 10, col, border=1, fill=True)
+    pdf.ln()
+
+    # Data rows
+    pdf.set_font('DejaVu', '', 12)
+    for line in table_lines[1:]:
+        cells = [c.strip() for c in line.split("|") if c.strip() != ""]
+        for cell in cells:
+            pdf.cell(col_width, 8, cell, border=1)
+        pdf.ln()
 
 
-def extract_string(field_value):
-    if isinstance(field_value, str):
-        return field_value.strip()
-    elif isinstance(field_value, dict):
-        for key in ["displayValue", "value", "name"]:
-            if key in field_value and isinstance(field_value[key], str):
-                return field_value[key].strip()
-        return str(field_value)
-    elif field_value is None:
-        return ""
-    else:
-        return str(field_value)
+# Other functions (generate_proposal_with_retry, extract_string, compose_prompt, etc.)
+# Use those from your existing code without changes.
 
-
-def compose_prompt(transaction, transaction_lines):
-    customer_name = extract_string(transaction.get("_customer_t_company_name", "Unknown Customer"))
-    customer_contact_name = " ".join(filter(None, [
-        extract_string(transaction.get("_customer_t_first_name", "")),
-        extract_string(transaction.get("_customer_t_last_name", ""))
-    ])).strip()
-
-    customer_address_parts = []
-    for field in ["_customer_t_address", "_customer_t_city", "_customer_t_state", "_customer_t_zip", "_customer_t_country"]:
-        value = extract_string(transaction.get(field, ""))
-        if value:
-            customer_address_parts.append(value)
-    customer_address = ", ".join(customer_address_parts)
-
-    contact_email = extract_string(transaction.get("_customer_t_email", "N/A"))
-    contact_phone = extract_string(transaction.get("_customer_t_phone", "N/A"))
-
-    transaction_name = extract_string(transaction.get("transactionName_t", "N/A"))
-    total_value = extract_string(transaction.get("totalContractValue_t", "N/A"))
-    currency = extract_string(transaction.get("currency_t", "USD"))
-    payment_terms = extract_string(transaction.get("paymentTerms_t", "N/A"))
-    owner = extract_string(transaction.get("owner_t", "Sales Team"))
-    sales_email = extract_string(transaction.get("_owner_email_t", "sales@example.com"))
-    sales_phone = extract_string(transaction.get("_owner_phone_t", "N/A"))
-
-    proposal_date = time.strftime("%B %d, %Y")
-
-    lines_text = ""
-    for i, line in enumerate(transaction_lines.get("items", []), start=1):
-        part_number = extract_string(line.get("_part_number", "N/A"))
-        desc = extract_string(line.get("_part_desc")) or extract_string(line.get("displayedItemName_l")) or "N/A"
-
-        qty_raw = line.get("requestedQuantity_l", 1)
-        try:
-            qty = float(qty_raw)
-        except (ValueError, TypeError):
-            qty = 1
-
-        price_unit = line.get("_price_unit_price_each", {}).get("value", 0)
-        currency_local = line.get("_price_unit_price_each", {}).get("currency", currency)
-
-        lead_time = extract_string(line.get("_part_lead_time", "N/A"))
-        shipping_date = extract_string(line.get("oRCL_ERP_RequestShipDate_l", "N/A"))
-
-        line_total = qty * price_unit
-
-        lines_text += (
-            f"{i}. Product: {desc} (Part #: {part_number})\n"
-            f"   Quantity: {qty}\n"
-            f"   Unit Price: {price_unit:.2f} {currency_local}\n"
-            f"   Line Total: {line_total:.2f} {currency_local}\n"
-            f"   Lead Time: {lead_time}\n"
-            f"   Estimated Shipping Date: {shipping_date}\n\n"
-        )
-
-    prompt = (
-        f"Generate a detailed and professional sales proposal document.\n"
-        f"Proposal Date: {proposal_date}\n"
-        f"Prepared by: {owner}\n"
-        f"Sales Representative Contact:\n"
-        f"Email: {sales_email}\n"
-        f"Phone: {sales_phone}\n\n"
-        f"Customer Information:\n"
-        f"Name: {customer_name}\n"
-        f"Contact Person: {customer_contact_name}\n"
-        f"Address: {customer_address}\n"
-        f"Email: {contact_email}\n"
-        f"Phone: {contact_phone}\n\n"
-        f"Transaction Details:\n"
-        f"Transaction Name: {transaction_name}\n"
-        f"Total Contract Value: {total_value} {currency}\n"
-        f"Payment Terms: {payment_terms}\n\n"
-        f"Line Items:\n{lines_text}\n"
-        f"Please include these sections:\n"
-        f"1. Introduction with appreciation.\n"
-        f"2. Summary of offered products and services.\n"
-        f"3. Pricing and payment terms.\n"
-        f"4. Delivery expectations.\n"
-        f"5. Terms and conditions.\n"
-        f"6. Next steps and contact info.\n"
-        f"Use a professional and persuasive tone suitable for a business proposal."
-    )
-    return prompt
-
-
+# Be sure to update your upload_pdf_to_s3 function to:
 def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
     pdf_bytes_io.seek(0)
     s3_key = f"proposals/CPO_Proposal_{transaction_id}.pdf"
 
     try:
         s3_client.upload_fileobj(
-            pdf_bytes_io,
-            S3_BUCKET_NAME,
+            pdf_bytes_io, 
+            S3_BUCKET_NAME, 
             s3_key,
-            ExtraArgs={"ContentType": "application/pdf"}
+            ExtraArgs={"ContentType": "application/pdf"}  # no ACL param
         )
     except NoCredentialsError:
         raise Exception("AWS credentials not found or invalid")
@@ -240,41 +197,7 @@ def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
 
     return url
 
-
-@app.route('/generate_proposal_document', methods=['POST'])
-@require_basic_auth
-def generate_proposal_document():
-    if not request.is_json:
-        return jsonify({"error": "Content-Type must be application/json"}), 415
-
-    data = request.get_json()
-    required_fields = ["transaction_id", "base_url", "process_var_name"]
-    if not data or not all(field in data for field in required_fields):
-        return jsonify({"error": f"Missing one of {required_fields} in JSON body"}), 400
-
-    transaction_id = data["transaction_id"]
-    base_url = data["base_url"].rstrip("/")
-    process_var_name = data["process_var_name"]
-
-    try:
-        transaction = fetch_transaction(base_url, process_var_name, transaction_id)
-        transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
-        prompt = compose_prompt(transaction, transaction_lines)
-        proposal_text_or_response = generate_proposal_with_retry(prompt)
-
-        if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response
-
-        pdf_file = create_pdf(proposal_text_or_response)
-        pdf_url = upload_pdf_to_s3(pdf_file, transaction_id)
-
-        return jsonify({"pdf_url": pdf_url})
-
-    except requests.HTTPError as e:
-        return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
-    except Exception as e:
-        return jsonify({"error": f"Unexpected error: {e}"}), 500
-
+# Flask route handler as before...
 
 if __name__ == "__main__":
     app.run(debug=True)
