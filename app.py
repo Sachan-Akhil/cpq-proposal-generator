@@ -4,17 +4,15 @@ from io import BytesIO
 import base64
 import requests
 from flask import Flask, request, jsonify, Response
-from fpdf import FPDF
 from openai import OpenAI
 from requests.auth import HTTPBasicAuth
-
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
+from fpdf import FPDF
 
 app = Flask(__name__)
 client = OpenAI()
 
-# AWS S3 Setup
 AWS_REGION = os.getenv("AWS_REGION")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
@@ -23,18 +21,13 @@ if not AWS_REGION or not S3_BUCKET_NAME:
 
 s3_client = boto3.client('s3', region_name=AWS_REGION)
 
-# Credentials for external API Basic Auth (Oracle CPQ)
 ORACLE_CPQ_USERNAME = os.getenv("ORACLE_CPQ_USERNAME")
 ORACLE_CPQ_PASSWORD = os.getenv("ORACLE_CPQ_PASSWORD")
 
-# Credentials for this service Basic Auth
 SERVICE_AUTH_USERNAME = os.getenv("API_AUTH_USERNAME")
 SERVICE_AUTH_PASSWORD = os.getenv("API_AUTH_PASSWORD")
 
-HEADERS = {
-    "Accept": "application/json"
-}
-
+HEADERS = {"Accept": "application/json"}
 
 def check_auth():
     auth = request.headers.get("Authorization")
@@ -48,48 +41,45 @@ def check_auth():
         return False
     return username == SERVICE_AUTH_USERNAME and password == SERVICE_AUTH_PASSWORD
 
-
 def require_basic_auth(f):
     def decorated(*args, **kwargs):
         if not check_auth():
-            return Response(
-                "Unauthorized", 401,
-                {"WWW-Authenticate": 'Basic realm="Login Required"'})
+            return Response("Unauthorized", 401, {"WWW-Authenticate": 'Basic realm="Login Required"'})
         return f(*args, **kwargs)
     decorated.__name__ = f.__name__
     return decorated
 
-
 def fetch_transaction(base_url, process_var_name, transaction_id):
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
     url = f"{api_base}/{transaction_id}"
-    resp = requests.get(url, headers=HEADERS,
-                        auth=HTTPBasicAuth(ORACLE_CPQ_USERNAME, ORACLE_CPQ_PASSWORD))
+    resp = requests.get(url, headers=HEADERS, auth=HTTPBasicAuth(ORACLE_CPQ_USERNAME, ORACLE_CPQ_PASSWORD))
     resp.raise_for_status()
     return resp.json()
-
 
 def fetch_transaction_lines(base_url, process_var_name, transaction_id):
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
     url = f"{api_base}/{transaction_id}/transactionLine"
-    resp = requests.get(url, headers=HEADERS,
-                        auth=HTTPBasicAuth(ORACLE_CPQ_USERNAME, ORACLE_CPQ_PASSWORD))
+    resp = requests.get(url, headers=HEADERS, auth=HTTPBasicAuth(ORACLE_CPQ_USERNAME, ORACLE_CPQ_PASSWORD))
     resp.raise_for_status()
     return resp.json()
-
 
 def create_pdf(text, logo_path=None):
     pdf = FPDF()
     pdf.add_page()
+
+    font_path = os.path.join(os.path.dirname(__file__), 'DejaVuSans.ttf')
+    pdf.add_font('DejaVu', '', font_path, uni=True)
+    pdf.set_font('DejaVu', '', 12)
+
     if logo_path:
         pdf.image(logo_path, x=10, y=8, w=33)
         pdf.ln(30)
-    pdf.set_font("Arial", size=12)
+
     for line in text.split("\n"):
         pdf.multi_cell(0, 10, line)
-    pdf_str = pdf.output(dest='S').encode('latin1')  # Get PDF as bytes in memory
-    return BytesIO(pdf_str)
 
+    pdf_bytes = pdf.output(dest='S').encode('latin-1')
+    return BytesIO(pdf_bytes)
 
 def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
     for attempt in range(max_retries):
@@ -113,7 +103,6 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
             else:
                 return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
-
 def extract_string(field_value):
     if isinstance(field_value, str):
         return field_value.strip()
@@ -126,7 +115,6 @@ def extract_string(field_value):
         return ""
     else:
         return str(field_value)
-
 
 def compose_prompt(transaction, transaction_lines):
     customer_name = extract_string(transaction.get("_customer_t_company_name", "Unknown Customer"))
@@ -212,13 +200,8 @@ def compose_prompt(transaction, transaction_lines):
     )
     return prompt
 
-
 def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
-    """
-    Upload PDF to AWS S3.
-    Returns the public URL to the uploaded PDF.
-    """
-    pdf_bytes_io.seek(0)  # Go to start of BytesIO object
+    pdf_bytes_io.seek(0)
     s3_key = f"proposals/CPO_Proposal_{transaction_id}.pdf"
 
     try:
@@ -226,10 +209,7 @@ def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
             pdf_bytes_io,
             S3_BUCKET_NAME,
             s3_key,
-            ExtraArgs={
-                "ACL": "public-read",
-                "ContentType": "application/pdf"
-            }
+            ExtraArgs={"ACL": "public-read", "ContentType": "application/pdf"}
         )
     except NoCredentialsError:
         raise Exception("AWS credentials not found or invalid")
@@ -242,7 +222,6 @@ def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
         url = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
 
     return url
-
 
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
@@ -266,21 +245,17 @@ def generate_proposal_document():
         proposal_text_or_response = generate_proposal_with_retry(prompt)
 
         if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response  # Error tuple from OpenAI wrapper
-
-        pdf_file = create_pdf(proposal_text_or_response)  # BytesIO object
-
-        # Upload PDF to S3
+            return proposal_text_or_response
+        
+        pdf_file = create_pdf(proposal_text_or_response)
         pdf_url = upload_pdf_to_s3(pdf_file, transaction_id)
 
-        # Return JSON with PDF URL
         return jsonify({"pdf_url": pdf_url})
 
     except requests.HTTPError as e:
         return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {e}"}), 500
-
 
 if __name__ == "__main__":
     app.run(debug=True)
