@@ -8,7 +8,7 @@ from openai import OpenAI
 from requests.auth import HTTPBasicAuth
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
-from fpdf import FPDF 
+from fpdf import FPDF  # fpdf2
 
 app = Flask(__name__)
 client = OpenAI()
@@ -257,3 +257,24 @@ def generate_proposal_document():
     process_var_name = data["process_var_name"]
 
     try:
+        transaction = fetch_transaction(base_url, process_var_name, transaction_id)
+        transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
+        prompt = compose_prompt(transaction, transaction_lines)
+        proposal_text_or_response = generate_proposal_with_retry(prompt)
+
+        if isinstance(proposal_text_or_response, tuple):
+            return proposal_text_or_response
+
+        pdf_file = create_pdf(proposal_text_or_response)
+        pdf_url = upload_pdf_to_s3(pdf_file, transaction_id)
+
+        return jsonify({"pdf_url": pdf_url})
+
+    except requests.HTTPError as e:
+        return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
+    except Exception as e:
+        return jsonify({"error": f"Unexpected error: {e}"}), 500
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
