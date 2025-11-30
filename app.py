@@ -29,6 +29,7 @@ SERVICE_AUTH_PASSWORD = os.getenv("API_AUTH_PASSWORD")
 
 HEADERS = {"Accept": "application/json"}
 
+
 def check_auth():
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Basic "):
@@ -41,6 +42,7 @@ def check_auth():
         return False
     return username == SERVICE_AUTH_USERNAME and password == SERVICE_AUTH_PASSWORD
 
+
 def require_basic_auth(f):
     def decorated(*args, **kwargs):
         if not check_auth():
@@ -49,12 +51,14 @@ def require_basic_auth(f):
     decorated.__name__ = f.__name__
     return decorated
 
+
 def fetch_transaction(base_url, process_var_name, transaction_id):
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
     url = f"{api_base}/{transaction_id}"
     resp = requests.get(url, headers=HEADERS, auth=HTTPBasicAuth(ORACLE_CPQ_USERNAME, ORACLE_CPQ_PASSWORD))
     resp.raise_for_status()
     return resp.json()
+
 
 def fetch_transaction_lines(base_url, process_var_name, transaction_id):
     api_base = f"https://{base_url}/rest/v19/commerceDocuments{process_var_name}Transaction"
@@ -63,8 +67,10 @@ def fetch_transaction_lines(base_url, process_var_name, transaction_id):
     resp.raise_for_status()
     return resp.json()
 
+
 def create_pdf(text, logo_path=None):
-    pdf = FPDF()
+    pdf = FPDF(format='A4')
+    pdf.set_margins(left=10, top=10, right=10)
     pdf.add_page()
 
     font_path = os.path.join(os.path.dirname(__file__), 'DejaVuSans.ttf')
@@ -80,6 +86,7 @@ def create_pdf(text, logo_path=None):
 
     pdf_bytes = pdf.output(dest='S').encode('latin-1')
     return BytesIO(pdf_bytes)
+
 
 def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
     for attempt in range(max_retries):
@@ -103,6 +110,7 @@ def generate_proposal_with_retry(prompt_text, max_retries=3, backoff=2):
             else:
                 return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
+
 def extract_string(field_value):
     if isinstance(field_value, str):
         return field_value.strip()
@@ -115,6 +123,7 @@ def extract_string(field_value):
         return ""
     else:
         return str(field_value)
+
 
 def compose_prompt(transaction, transaction_lines):
     customer_name = extract_string(transaction.get("_customer_t_company_name", "Unknown Customer"))
@@ -200,6 +209,7 @@ def compose_prompt(transaction, transaction_lines):
     )
     return prompt
 
+
 def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
     pdf_bytes_io.seek(0)
     s3_key = f"proposals/CPO_Proposal_{transaction_id}.pdf"
@@ -222,6 +232,7 @@ def upload_pdf_to_s3(pdf_bytes_io, transaction_id):
         url = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
 
     return url
+
 
 @app.route('/generate_proposal_document', methods=['POST'])
 @require_basic_auth
@@ -246,8 +257,9 @@ def generate_proposal_document():
 
         if isinstance(proposal_text_or_response, tuple):
             return proposal_text_or_response
-        
+
         pdf_file = create_pdf(proposal_text_or_response)
+
         pdf_url = upload_pdf_to_s3(pdf_file, transaction_id)
 
         return jsonify({"pdf_url": pdf_url})
@@ -256,6 +268,7 @@ def generate_proposal_document():
         return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {e}"}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True)
