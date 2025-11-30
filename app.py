@@ -8,7 +8,7 @@ from openai import OpenAI
 from requests.auth import HTTPBasicAuth
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
-from fpdf import FPDF
+from fpdf import FPDF 
 
 app = Flask(__name__)
 client = OpenAI()
@@ -70,7 +70,9 @@ def fetch_transaction_lines(base_url, process_var_name, transaction_id):
 
 def create_pdf(text, logo_path=None):
     pdf = FPDF(format='A4')
-    pdf.set_margins(left=10, top=10, right=10)
+    pdf.set_left_margin(10)
+    pdf.set_right_margin(10)
+    pdf.set_top_margin(10)
     pdf.add_page()
 
     font_path = os.path.join(os.path.dirname(__file__), 'DejaVuSans.ttf')
@@ -81,8 +83,13 @@ def create_pdf(text, logo_path=None):
         pdf.image(logo_path, x=10, y=8, w=33)
         pdf.ln(30)
 
+    usable_width = pdf.w - pdf.l_margin - pdf.r_margin
+
     for line in text.split("\n"):
-        pdf.multi_cell(0, 10, line)
+        if not line.strip():
+            pdf.ln(10)
+        else:
+            pdf.multi_cell(w=usable_width, h=10, txt=line)
 
     pdf_bytes = pdf.output(dest='S').encode('latin-1')
     return BytesIO(pdf_bytes)
@@ -250,25 +257,3 @@ def generate_proposal_document():
     process_var_name = data["process_var_name"]
 
     try:
-        transaction = fetch_transaction(base_url, process_var_name, transaction_id)
-        transaction_lines = fetch_transaction_lines(base_url, process_var_name, transaction_id)
-        prompt = compose_prompt(transaction, transaction_lines)
-        proposal_text_or_response = generate_proposal_with_retry(prompt)
-
-        if isinstance(proposal_text_or_response, tuple):
-            return proposal_text_or_response
-
-        pdf_file = create_pdf(proposal_text_or_response)
-
-        pdf_url = upload_pdf_to_s3(pdf_file, transaction_id)
-
-        return jsonify({"pdf_url": pdf_url})
-
-    except requests.HTTPError as e:
-        return jsonify({"error": f"HTTP error when fetching transaction data: {e}"}), 502
-    except Exception as e:
-        return jsonify({"error": f"Unexpected error: {e}"}), 500
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
